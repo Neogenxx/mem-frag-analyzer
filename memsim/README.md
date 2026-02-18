@@ -35,7 +35,7 @@ memsim/
 ## Setup & Run
 
 ### Prerequisites
-- Python 3.9+
+- Python 3.9 - 3.13
 - pip
 
 ### Install & Start
