@@ -29,7 +29,7 @@ memsim/
 ├── frontend/
 │   └── index.html     ← D3.js UI (single file, served by FastAPI)
 ├── requirements.txt
-└── run.sh
+└── run.bat
 ```
 
 ## Setup & Run
