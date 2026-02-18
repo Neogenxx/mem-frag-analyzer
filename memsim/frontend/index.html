@@ -1,0 +1,1086 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MEMSIM — Contiguous Memory Allocator</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <style>
+    /* ─── Reset & Base ─────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0d0d0d;
+      --surface:  #111111;
+      --border:   #2a2a2a;
+      --border2:  #3f3f3f;
+      --white:    #f0ede8;
+      --dim:      #888888;
+      --dimmer:   #444444;
+      --accent:   #ffffff;
+      --free-bg:  #1a1a1a;
+      --alloc-bg: #f0ede8;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--white);
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 13px;
+      line-height: 1.5;
+      overflow-x: hidden;
+    }
+
+    /* ─── Layout ────────────────────────────────────────────────────────── */
+    #app {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      grid-template-columns: 1fr;
+      min-height: 100vh;
+    }
+
+    header {
+      border-bottom: 2px solid var(--border2);
+      padding: 18px 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--bg);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .logo {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 2rem;
+      letter-spacing: 0.12em;
+      color: var(--white);
+    }
+    .logo span { color: var(--dim); }
+
+    .header-meta {
+      font-size: 11px;
+      color: var(--dim);
+      text-align: right;
+      font-family: 'Share Tech Mono', monospace;
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      grid-template-rows: 1fr;
+      gap: 0;
+    }
+
+    /* ─── Panel ─────────────────────────────────────────────────────────── */
+    .panel {
+      border-right: 2px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .panel-section {
+      border-bottom: 1px solid var(--border);
+      padding: 20px 24px;
+    }
+
+    .panel-section:last-child { border-bottom: none; flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+
+    .section-label {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 10px;
+      letter-spacing: 0.2em;
+      color: var(--dim);
+      text-transform: uppercase;
+      margin-bottom: 14px;
+    }
+
+    /* ─── Config Row ─────────────────────────────────────────────────────── */
+    .config-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .config-row label {
+      font-size: 11px;
+      color: var(--dim);
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .config-row .field { flex: 1; }
+
+    /* ─── Inputs ─────────────────────────────────────────────────────────── */
+    input[type="text"],
+    input[type="number"],
+    select {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border2);
+      color: var(--white);
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 13px;
+      padding: 8px 10px;
+      outline: none;
+      transition: border-color 0.15s;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+
+    input:focus, select:focus {
+      border-color: var(--white);
+    }
+
+    select {
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23888'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      padding-right: 28px;
+    }
+
+    /* ─── Buttons ─────────────────────────────────────────────────────────── */
+    .btn {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 12px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 10px 16px;
+      border: 1px solid var(--border2);
+      background: transparent;
+      color: var(--white);
+      cursor: pointer;
+      transition: all 0.12s ease;
+      box-shadow: none;
+      position: relative;
+    }
+
+    .btn:hover {
+      background: var(--white);
+      color: var(--bg);
+      border-color: var(--white);
+      box-shadow: 4px 4px 0px rgba(240,237,232,0.25);
+      transform: translate(-1px, -1px);
+    }
+
+    .btn:active {
+      transform: translate(1px, 1px);
+      box-shadow: none;
+    }
+
+    .btn-primary {
+      background: var(--white);
+      color: var(--bg);
+      border-color: var(--white);
+    }
+
+    .btn-primary:hover {
+      box-shadow: 6px 6px 0px rgba(240,237,232,0.3);
+    }
+
+    .btn-danger:hover {
+      background: #ff3333;
+      color: #fff;
+      border-color: #ff3333;
+      box-shadow: 4px 4px 0px rgba(255,51,51,0.3);
+    }
+
+    .btn-full { width: 100%; }
+
+    .btn-group {
+      display: flex;
+      gap: 8px;
+    }
+
+    /* ─── Form grid ──────────────────────────────────────────────────────── */
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .form-grid.three { grid-template-columns: 1fr 1fr 1fr; }
+
+    .field-label {
+      font-size: 10px;
+      color: var(--dim);
+      margin-bottom: 4px;
+      letter-spacing: 0.1em;
+    }
+
+    /* ─── Right column ──────────────────────────────────────────────────── */
+    .viz-col {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ─── Memory Strip ───────────────────────────────────────────────────── */
+    #mem-strip-wrap {
+      padding: 24px 32px 16px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    #mem-strip-label {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 10px;
+      letter-spacing: 0.2em;
+      color: var(--dim);
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+
+    #mem-strip-svg {
+      width: 100%;
+      display: block;
+    }
+
+    .mem-block { cursor: default; }
+    .mem-block rect { transition: opacity 0.2s; }
+    .mem-block:hover rect { opacity: 0.85; }
+
+    .mem-tooltip {
+      position: fixed;
+      background: var(--bg);
+      border: 1px solid var(--border2);
+      padding: 10px 14px;
+      font-size: 11px;
+      font-family: 'Share Tech Mono', monospace;
+      pointer-events: none;
+      z-index: 1000;
+      display: none;
+      line-height: 1.8;
+      white-space: pre;
+    }
+
+    /* ─── Bottom split ───────────────────────────────────────────────────── */
+    .bottom-split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ─── Metrics ─────────────────────────────────────────────────────────── */
+    #metrics-col {
+      border-right: 1px solid var(--border);
+      padding: 20px 24px;
+      overflow-y: auto;
+    }
+
+    .metric-card {
+      margin-bottom: 12px;
+    }
+
+    .metric-name {
+      font-size: 10px;
+      color: var(--dim);
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      margin-bottom: 2px;
+    }
+
+    .metric-value {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 2rem;
+      color: var(--white);
+      line-height: 1;
+    }
+
+    .metric-unit {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 11px;
+      color: var(--dim);
+    }
+
+    .utilization-bar {
+      height: 4px;
+      background: var(--border);
+      margin-top: 12px;
+      margin-bottom: 4px;
+      position: relative;
+    }
+
+    .utilization-bar-fill {
+      height: 100%;
+      background: var(--white);
+      transition: width 0.4s ease;
+    }
+
+    .util-label {
+      font-size: 10px;
+      color: var(--dim);
+      display: flex;
+      justify-content: space-between;
+    }
+
+    /* ─── Table ──────────────────────────────────────────────────────────── */
+    #table-col {
+      overflow-y: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+    }
+
+    thead {
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+      z-index: 10;
+    }
+
+    th {
+      text-align: left;
+      padding: 10px 14px;
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 10px;
+      letter-spacing: 0.15em;
+      color: var(--dim);
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--border);
+      border-right: 1px solid var(--border);
+    }
+
+    td {
+      padding: 9px 14px;
+      border-bottom: 1px solid var(--border);
+      border-right: 1px solid var(--border);
+      font-family: 'Share Tech Mono', monospace;
+    }
+
+    tr.row-free td { color: var(--dimmer); }
+    tr.row-alloc td { color: var(--white); }
+    tr.row-alloc td:first-child { font-weight: 600; }
+
+    /* ─── Log ────────────────────────────────────────────────────────────── */
+    #log-col {
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+    }
+
+    #log-inner {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px 16px;
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 11px;
+      line-height: 1.8;
+    }
+
+    .log-entry {
+      display: flex;
+      gap: 12px;
+      padding: 3px 0;
+      border-bottom: 1px solid #1c1c1c;
+      animation: fadeIn 0.2s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateX(-6px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+
+    .log-time { color: var(--dimmer); flex-shrink: 0; width: 26px; text-align: right; }
+    .log-action { width: 80px; flex-shrink: 0; }
+    .log-action.ALLOC     { color: #c8f7c5; }
+    .log-action.FREE      { color: #f7d6c5; }
+    .log-action.COMPACT   { color: #c5d6f7; }
+    .log-action.RESET     { color: #f7f7c5; }
+    .log-action.INIT      { color: var(--dim); }
+    .log-action.ALLOC_FAIL{ color: #f7c5c5; }
+    .log-action.FREE_FAIL { color: #f7c5c5; }
+    .log-msg { color: var(--dim); }
+
+    /* ─── Step trace nav ─────────────────────────────────────────────────── */
+    #step-nav {
+      display: flex;
+      gap: 8px;
+      padding: 10px 16px;
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    #step-nav .step-info {
+      flex: 1;
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 11px;
+      color: var(--dim);
+      display: flex;
+      align-items: center;
+    }
+
+    /* ─── Status bar ─────────────────────────────────────────────────────── */
+    #status-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: var(--bg);
+      border-top: 1px solid var(--border);
+      padding: 4px 32px;
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 10px;
+      color: var(--dim);
+      display: flex;
+      gap: 24px;
+      z-index: 200;
+    }
+
+    #status-bar span { color: var(--white); }
+
+    /* ─── Toast ─────────────────────────────────────────────────────────── */
+    #toast {
+      position: fixed;
+      top: 72px;
+      right: 24px;
+      background: var(--bg);
+      border: 1px solid var(--border2);
+      padding: 12px 18px;
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 12px;
+      z-index: 999;
+      opacity: 0;
+      transition: opacity 0.2s;
+      pointer-events: none;
+      max-width: 360px;
+    }
+
+    #toast.show { opacity: 1; }
+    #toast.ok   { border-left: 3px solid #c8f7c5; }
+    #toast.err  { border-left: 3px solid #f7c5c5; }
+    #toast.info { border-left: 3px solid #c5d6f7; }
+
+    /* ─── Scrollbar ─────────────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border2); }
+
+    /* ─── Responsive ─────────────────────────────────────────────────────── */
+    @media (max-width: 900px) {
+      main { grid-template-columns: 1fr; }
+      .panel { border-right: none; border-bottom: 2px solid var(--border); }
+      .bottom-split { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo">MEM<span>SIM</span></div>
+    <div class="header-meta">
+      CONTIGUOUS MEMORY ALLOCATION SIMULATOR<br>
+      FIRST FIT · BEST FIT · WORST FIT
+    </div>
+  </header>
+
+  <main>
+    <!-- ─── Left Panel ─────────────────────────────────────────── -->
+    <aside class="panel">
+
+      <!-- Config -->
+      <div class="panel-section">
+        <div class="section-label">System Config</div>
+        <div class="form-grid">
+          <div>
+            <div class="field-label">TOTAL MEM (KB)</div>
+            <input type="number" id="cfg-total" value="1024" min="64" step="64" />
+          </div>
+          <div>
+            <div class="field-label">ALLOC UNIT (KB)</div>
+            <input type="number" id="cfg-unit" value="32" min="4" step="4" />
+          </div>
+        </div>
+        <button class="btn btn-full" id="btn-reset">⟳ RESET MEMORY</button>
+      </div>
+
+      <!-- Allocate -->
+      <div class="panel-section">
+        <div class="section-label">Allocate</div>
+        <div class="form-grid three">
+          <div>
+            <div class="field-label">PID</div>
+            <input type="text" id="alloc-pid" value="P1" placeholder="P1" />
+          </div>
+          <div>
+            <div class="field-label">SIZE (KB)</div>
+            <input type="number" id="alloc-size" value="100" min="1" />
+          </div>
+          <div>
+            <div class="field-label">STRATEGY</div>
+            <select id="alloc-strategy">
+              <option value="first_fit">FIRST</option>
+              <option value="best_fit">BEST</option>
+              <option value="worst_fit">WORST</option>
+            </select>
+          </div>
+        </div>
+        <div class="hint" id="rounding-hint" style="font-size:10px;color:var(--dim);margin-bottom:10px;font-family:'Share Tech Mono',monospace;"></div>
+        <button class="btn btn-primary btn-full" id="btn-alloc">▶ ALLOCATE</button>
+      </div>
+
+      <!-- Free -->
+      <div class="panel-section">
+        <div class="section-label">Deallocate</div>
+        <div class="form-grid">
+          <div>
+            <div class="field-label">PID TO FREE</div>
+            <input type="text" id="free-pid" placeholder="P1" />
+          </div>
+          <div style="display:flex;align-items:flex-end;">
+            <button class="btn btn-danger btn-full" id="btn-free">✕ FREE</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Compact -->
+      <div class="panel-section">
+        <div class="section-label">Compaction</div>
+        <p style="font-size:11px;color:var(--dim);margin-bottom:12px;line-height:1.6;">
+          Slides all allocated blocks to the front of memory, coalescing all free space into one contiguous region.
+        </p>
+        <button class="btn btn-full" id="btn-compact">⊞ COMPACT MEMORY</button>
+      </div>
+
+      <!-- Quick fill -->
+      <div class="panel-section">
+        <div class="section-label">Quick Fill Scenario</div>
+        <div class="btn-group" style="flex-wrap:wrap;gap:6px;">
+          <button class="btn" id="demo-fragmented" style="font-size:11px;padding:7px 10px;">FRAGMENTED</button>
+          <button class="btn" id="demo-full" style="font-size:11px;padding:7px 10px;">NEAR FULL</button>
+          <button class="btn" id="demo-swiss" style="font-size:11px;padding:7px 10px;">SWISS CHEESE</button>
+        </div>
+      </div>
+
+      <!-- Log section -->
+      <div class="panel-section" style="flex:1;overflow:hidden;display:flex;flex-direction:column;">
+        <div class="section-label">Event Log</div>
+        <div id="log-inner"></div>
+        <div id="step-nav">
+          <button class="btn" id="btn-step-prev" style="padding:6px 12px;">◀</button>
+          <div class="step-info" id="step-info">LIVE</div>
+          <button class="btn" id="btn-step-next" style="padding:6px 12px;">▶</button>
+          <button class="btn" id="btn-step-live" style="padding:6px 12px;font-size:10px;">LIVE</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ─── Right Column ───────────────────────────────────────── -->
+    <div class="viz-col">
+      <div id="mem-strip-wrap">
+        <div id="mem-strip-label">PHYSICAL MEMORY MAP</div>
+        <svg id="mem-strip-svg" height="80"></svg>
+        <div id="addr-labels" style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--dim);display:flex;justify-content:space-between;margin-top:4px;"></div>
+      </div>
+
+      <div class="bottom-split">
+        <!-- Metrics -->
+        <div id="metrics-col">
+          <div class="section-label" style="padding:16px 24px 0;font-family:'Share Tech Mono';font-size:10px;letter-spacing:.2em;color:var(--dim);">FRAGMENTATION METRICS</div>
+
+          <div style="padding: 12px 24px;">
+            <div class="utilization-bar">
+              <div class="utilization-bar-fill" id="util-fill" style="width:0%"></div>
+            </div>
+            <div class="util-label">
+              <span>UTILIZATION</span>
+              <span id="util-pct">0%</span>
+            </div>
+          </div>
+
+          <div style="padding: 0 24px; display:grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+            <div class="metric-card">
+              <div class="metric-name">Total Free</div>
+              <div class="metric-value" id="m-total-free">—</div>
+              <div class="metric-unit">KB</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-name">Total Allocated</div>
+              <div class="metric-value" id="m-total-alloc">—</div>
+              <div class="metric-unit">KB</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-name">Internal Frag.</div>
+              <div class="metric-value" id="m-int-frag">—</div>
+              <div class="metric-unit">KB</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-name">External Frag.</div>
+              <div class="metric-value" id="m-ext-frag">—</div>
+              <div class="metric-unit">KB</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-name">Largest Free Block</div>
+              <div class="metric-value" id="m-largest">—</div>
+              <div class="metric-unit">KB</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-name">Free Regions</div>
+              <div class="metric-value" id="m-free-regions">—</div>
+              <div class="metric-unit">blocks</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Block Table -->
+        <div id="table-col">
+          <table id="block-table">
+            <thead>
+              <tr>
+                <th>PID</th>
+                <th>START</th>
+                <th>END</th>
+                <th>PHYS KB</th>
+                <th>LOGIC KB</th>
+                <th>INT FRAG</th>
+              </tr>
+            </thead>
+            <tbody id="block-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- Tooltip -->
+<div class="mem-tooltip" id="tooltip"></div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<!-- Status bar -->
+<div id="status-bar">
+  TOTAL: <span id="sb-total">—</span> KB &nbsp;|&nbsp;
+  UNIT: <span id="sb-unit">—</span> KB &nbsp;|&nbsp;
+  BLOCKS: <span id="sb-blocks">—</span> &nbsp;|&nbsp;
+  API: <span id="sb-api">localhost:8000</span>
+</div>
+
+<script>
+/* ─────────────────────────────────────────────────────────────────────────
+   MEMSIM Frontend
+   ───────────────────────────────────────────────────────────────────────── */
+
+const API = '';  // Same origin; change if needed e.g. 'http://localhost:8000'
+let state = null;
+let eventLog = [];
+let stepIdx = -1; // -1 = live
+let allocIdCounter = 1;
+
+/* ─── Palette for PIDs ─────────────────────────────────────────────────── */
+const PID_COLORS = [
+  '#e8e8e8','#c8c8c8','#a8a8a8','#d0d0d0',
+  '#b8b8b8','#989898','#f0f0f0','#d8d8d8',
+];
+const pidColorMap = {};
+let colorIdx = 0;
+function pidColor(pid) {
+  if (!pidColorMap[pid]) {
+    pidColorMap[pid] = PID_COLORS[colorIdx++ % PID_COLORS.length];
+  }
+  return pidColorMap[pid];
+}
+
+/* ─── API helpers ──────────────────────────────────────────────────────── */
+async function api(path, method = 'GET', body = null) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(API + path, opts);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || res.statusText);
+  }
+  return res.json();
+}
+
+/* ─── Toast ────────────────────────────────────────────────────────────── */
+let toastTimer;
+function toast(msg, type = 'info') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = `show ${type}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.className = '', 2800);
+}
+
+/* ─── Main render ──────────────────────────────────────────────────────── */
+function render(s) {
+  state = s;
+  renderStrip(s.blocks, s.total_size);
+  renderTable(s.blocks);
+  renderMetrics(s.metrics);
+  renderStatusBar(s);
+}
+
+/* ─── Memory Strip ─────────────────────────────────────────────────────── */
+function renderStrip(blocks, total) {
+  const svg = d3.select('#mem-strip-svg');
+  const wrap = document.getElementById('mem-strip-wrap');
+  const W = wrap.clientWidth - 48;
+  const H = 80;
+  svg.attr('viewBox', `0 0 ${W} ${H}`);
+
+  const tooltip = document.getElementById('tooltip');
+
+  svg.selectAll('*').remove();
+
+  const scale = W / total;
+
+  blocks.forEach((b, i) => {
+    const x = b.start * scale;
+    const w = Math.max(b.size * scale - 1, 1);
+    const isFree = b.is_free;
+
+    const g = svg.append('g')
+      .attr('class', 'mem-block')
+      .attr('transform', `translate(${x}, 0)`);
+
+    // Main rect
+    g.append('rect')
+      .attr('x', 0).attr('y', 0)
+      .attr('width', w).attr('height', H - 16)
+      .attr('fill', isFree ? 'transparent' : pidColor(b.pid))
+      .attr('stroke', isFree ? '#2a2a2a' : '#555')
+      .attr('stroke-width', isFree ? 1 : 0);
+
+    // Crosshatch for free
+    if (isFree) {
+      const patId = `hatch-${i}`;
+      const defs = svg.append('defs');
+      const pat = defs.append('pattern')
+        .attr('id', patId).attr('patternUnits','userSpaceOnUse')
+        .attr('width', 8).attr('height', 8)
+        .attr('patternTransform','rotate(45)');
+      pat.append('line')
+        .attr('x1',0).attr('y1',0).attr('x2',0).attr('y2',8)
+        .attr('stroke','#1f1f1f').attr('stroke-width',1);
+      g.select('rect').attr('fill', `url(#${patId})`);
+    }
+
+    // Internal frag indicator
+    if (!isFree && b.internal_fragmentation > 0) {
+      const fragW = (b.internal_fragmentation / b.size) * w;
+      g.append('rect')
+        .attr('x', w - fragW).attr('y', 0)
+        .attr('width', fragW).attr('height', H - 16)
+        .attr('fill', 'none')
+        .attr('stroke', '#555').attr('stroke-width', 1)
+        .attr('stroke-dasharray', '3,2');
+    }
+
+    // Label
+    if (w > 24) {
+      g.append('text')
+        .attr('x', w / 2).attr('y', (H - 16) / 2 + 1)
+        .attr('text-anchor', 'middle')
+        .attr('dominant-baseline', 'middle')
+        .attr('fill', isFree ? '#333' : '#111')
+        .attr('font-family', "'Share Tech Mono', monospace")
+        .attr('font-size', Math.min(11, w / 3))
+        .text(isFree ? 'FREE' : b.pid);
+    }
+
+    // Address tick
+    g.append('line')
+      .attr('x1', 0).attr('y1', H - 16)
+      .attr('x2', 0).attr('y2', H - 12)
+      .attr('stroke', '#444').attr('stroke-width', 1);
+
+    g.append('text')
+      .attr('x', 2).attr('y', H - 2)
+      .attr('fill', '#444')
+      .attr('font-family', "'Share Tech Mono', monospace")
+      .attr('font-size', 9)
+      .text(b.start);
+
+    // Hover tooltip
+    g.on('mousemove', (evt) => {
+      tooltip.style.display = 'block';
+      tooltip.style.left = (evt.clientX + 14) + 'px';
+      tooltip.style.top = (evt.clientY - 10) + 'px';
+      tooltip.textContent =
+        `${isFree ? '[ FREE ]' : `PID: ${b.pid}`}\n` +
+        `Start:  ${b.start} KB\n` +
+        `End:    ${b.end} KB\n` +
+        `Size:   ${b.size} KB` +
+        (b.logical_size != null ? `\nLogic:  ${b.logical_size} KB\nWaste:  ${b.internal_fragmentation} KB` : '');
+    }).on('mouseleave', () => {
+      tooltip.style.display = 'none';
+    });
+  });
+}
+
+/* ─── Block Table ──────────────────────────────────────────────────────── */
+function renderTable(blocks) {
+  const tbody = document.getElementById('block-tbody');
+  tbody.innerHTML = '';
+  blocks.forEach(b => {
+    const tr = document.createElement('tr');
+    tr.className = b.is_free ? 'row-free' : 'row-alloc';
+    tr.innerHTML = `
+      <td>${b.is_free ? '—' : b.pid}</td>
+      <td>${b.start}</td>
+      <td>${b.end}</td>
+      <td>${b.size}</td>
+      <td>${b.logical_size != null ? b.logical_size : '—'}</td>
+      <td>${b.internal_fragmentation > 0 ? b.internal_fragmentation : '—'}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+/* ─── Metrics ──────────────────────────────────────────────────────────── */
+function renderMetrics(m) {
+  document.getElementById('m-total-free').textContent   = m.total_free;
+  document.getElementById('m-total-alloc').textContent  = m.total_allocated;
+  document.getElementById('m-int-frag').textContent     = m.internal_fragmentation;
+  document.getElementById('m-ext-frag').textContent     = m.external_fragmentation;
+  document.getElementById('m-largest').textContent      = m.largest_free_block;
+  document.getElementById('m-free-regions').textContent = m.num_free_blocks;
+
+  const pct = m.utilization_pct;
+  document.getElementById('util-fill').style.width = pct + '%';
+  document.getElementById('util-pct').textContent  = pct + '%';
+}
+
+/* ─── Status bar ───────────────────────────────────────────────────────── */
+function renderStatusBar(s) {
+  document.getElementById('sb-total').textContent  = s.total_size;
+  document.getElementById('sb-unit').textContent   = s.allocation_unit;
+  document.getElementById('sb-blocks').textContent = s.blocks.length;
+}
+
+/* ─── Log ──────────────────────────────────────────────────────────────── */
+function appendLog(entry, idx) {
+  const el = document.getElementById('log-inner');
+  const div = document.createElement('div');
+  div.className = 'log-entry';
+  div.innerHTML = `
+    <span class="log-time">${String(idx).padStart(2,'0')}</span>
+    <span class="log-action ${entry.action}">${entry.action}</span>
+    <span class="log-msg">${entry.message}</span>
+  `;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+}
+
+async function syncLog() {
+  const data = await api('/api/log');
+  const entries = data.log;
+  const el = document.getElementById('log-inner');
+  // Only append new entries
+  const currentCount = el.querySelectorAll('.log-entry').length;
+  for (let i = currentCount; i < entries.length; i++) {
+    appendLog(entries[i], i + 1);
+  }
+  eventLog = entries;
+}
+
+/* ─── Step Trace ──────────────────────────────────────────────────────── */
+function renderStepInfo() {
+  if (stepIdx === -1) {
+    document.getElementById('step-info').textContent = 'LIVE';
+  } else {
+    document.getElementById('step-info').textContent =
+      `STEP ${stepIdx + 1} / ${eventLog.length}`;
+    const e = eventLog[stepIdx];
+    // Render historical snapshot
+    renderStrip(e.snapshot, state.total_size);
+    renderTable(e.snapshot);
+    renderMetrics(e.metrics);
+  }
+}
+
+document.getElementById('btn-step-prev').addEventListener('click', () => {
+  if (eventLog.length === 0) return;
+  if (stepIdx === -1) stepIdx = eventLog.length - 1;
+  else stepIdx = Math.max(0, stepIdx - 1);
+  renderStepInfo();
+});
+
+document.getElementById('btn-step-next').addEventListener('click', () => {
+  if (stepIdx === -1) return;
+  stepIdx++;
+  if (stepIdx >= eventLog.length) stepIdx = -1;
+  if (stepIdx === -1) { render(state); }
+  renderStepInfo();
+});
+
+document.getElementById('btn-step-live').addEventListener('click', () => {
+  stepIdx = -1;
+  render(state);
+  renderStepInfo();
+});
+
+/* ─── Rounding hint ────────────────────────────────────────────────────── */
+function updateRoundingHint() {
+  if (!state) return;
+  const size = parseInt(document.getElementById('alloc-size').value) || 0;
+  const unit = state.allocation_unit;
+  const phys = Math.ceil(size / unit) * unit;
+  const hint = document.getElementById('rounding-hint');
+  if (size > 0 && phys !== size) {
+    hint.textContent = `↳ rounds up ${size} → ${phys} KB (+${phys - size} KB wasted)`;
+  } else if (size > 0) {
+    hint.textContent = `↳ exact fit: ${phys} KB`;
+  } else {
+    hint.textContent = '';
+  }
+}
+
+document.getElementById('alloc-size').addEventListener('input', updateRoundingHint);
+
+/* ─── Auto-increment PID ───────────────────────────────────────────────── */
+function nextPid() {
+  const pids = state?.blocks.filter(b => !b.is_free).map(b => b.pid) || [];
+  // Find the next available Pn
+  let n = 1;
+  while (pids.includes(`P${n}`)) n++;
+  document.getElementById('alloc-pid').value = `P${n}`;
+}
+
+/* ─── Actions ──────────────────────────────────────────────────────────── */
+document.getElementById('btn-alloc').addEventListener('click', async () => {
+  const pid  = document.getElementById('alloc-pid').value.trim();
+  const size = parseInt(document.getElementById('alloc-size').value);
+  const strat = document.getElementById('alloc-strategy').value;
+  if (!pid || !size) return toast('Enter PID and size', 'err');
+  try {
+    const data = await api('/api/allocate', 'POST', { pid, size, strategy: strat });
+    render(data.state);
+    await syncLog();
+    stepIdx = -1;
+    renderStepInfo();
+    if (data.result.success) {
+      toast(`✓ ${data.result.message}`, 'ok');
+      nextPid();
+    } else {
+      toast(`✗ ${data.result.message}`, 'err');
+    }
+    updateRoundingHint();
+  } catch(e) { toast(e.message, 'err'); }
+});
+
+document.getElementById('btn-free').addEventListener('click', async () => {
+  const pid = document.getElementById('free-pid').value.trim();
+  if (!pid) return toast('Enter a PID to free', 'err');
+  try {
+    const data = await api('/api/free', 'POST', { pid });
+    render(data.state);
+    await syncLog();
+    stepIdx = -1;
+    toast(data.success ? `✓ ${data.message}` : `✗ ${data.message}`,
+          data.success ? 'ok' : 'err');
+  } catch(e) { toast(e.message, 'err'); }
+});
+
+document.getElementById('btn-compact').addEventListener('click', async () => {
+  try {
+    const data = await api('/api/compact', 'POST');
+    render(data.state);
+    await syncLog();
+    stepIdx = -1;
+    toast(`⊞ ${data.message}`, 'info');
+  } catch(e) { toast(e.message, 'err'); }
+});
+
+document.getElementById('btn-reset').addEventListener('click', async () => {
+  const total = parseInt(document.getElementById('cfg-total').value);
+  const unit  = parseInt(document.getElementById('cfg-unit').value);
+  try {
+    const data = await api('/api/reset', 'POST', { total_size: total, allocation_unit: unit });
+    Object.keys(pidColorMap).forEach(k => delete pidColorMap[k]);
+    colorIdx = 0;
+    document.getElementById('log-inner').innerHTML = '';
+    render(data.state);
+    await syncLog();
+    stepIdx = -1;
+    toast('Memory reset', 'info');
+    updateRoundingHint();
+  } catch(e) { toast(e.message, 'err'); }
+});
+
+/* ─── Demo scenarios ───────────────────────────────────────────────────── */
+async function runScenario(steps) {
+  await api('/api/reset', 'POST', { total_size: 1024, allocation_unit: 32 });
+  Object.keys(pidColorMap).forEach(k => delete pidColorMap[k]);
+  colorIdx = 0;
+  document.getElementById('log-inner').innerHTML = '';
+  for (const s of steps) {
+    if (s.action === 'alloc') await api('/api/allocate','POST',s.body);
+    if (s.action === 'free')  await api('/api/free','POST',s.body);
+  }
+  const data = await api('/api/state');
+  render(data);
+  await syncLog();
+  stepIdx = -1;
+}
+
+document.getElementById('demo-fragmented').addEventListener('click', () => {
+  runScenario([
+    {action:'alloc', body:{pid:'P1',size:100,strategy:'first_fit'}},
+    {action:'alloc', body:{pid:'P2',size:200,strategy:'first_fit'}},
+    {action:'alloc', body:{pid:'P3',size:80,strategy:'first_fit'}},
+    {action:'alloc', body:{pid:'P4',size:150,strategy:'first_fit'}},
+    {action:'alloc', body:{pid:'P5',size:120,strategy:'first_fit'}},
+    {action:'free',  body:{pid:'P2'}},
+    {action:'free',  body:{pid:'P4'}},
+  ]).then(() => toast('Fragmented scenario loaded', 'info'));
+});
+
+document.getElementById('demo-full').addEventListener('click', () => {
+  runScenario([
+    {action:'alloc', body:{pid:'P1',size:256,strategy:'best_fit'}},
+    {action:'alloc', body:{pid:'P2',size:256,strategy:'best_fit'}},
+    {action:'alloc', body:{pid:'P3',size:256,strategy:'best_fit'}},
+    {action:'alloc', body:{pid:'P4',size:200,strategy:'best_fit'}},
+    {action:'free',  body:{pid:'P3'}},
+    {action:'alloc', body:{pid:'P5',size:64,strategy:'best_fit'}},
+  ]).then(() => toast('Near-full scenario loaded', 'info'));
+});
+
+document.getElementById('demo-swiss').addEventListener('click', () => {
+  const steps = [];
+  for(let i=1; i<=10; i++) steps.push({action:'alloc',body:{pid:`P${i}`,size:60+i*5,strategy:'worst_fit'}});
+  for(let i=2; i<=10; i+=2) steps.push({action:'free',body:{pid:`P${i}`}});
+  runScenario(steps).then(() => toast('Swiss cheese scenario loaded', 'info'));
+});
+
+/* ─── Resize strip on window resize ───────────────────────────────────── */
+let resizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (state) renderStrip(state.blocks, state.total_size);
+  }, 100);
+});
+
+/* ─── Bootstrap ────────────────────────────────────────────────────────── */
+async function init() {
+  try {
+    const data = await api('/api/state');
+    render(data);
+    await syncLog();
+    updateRoundingHint();
+    document.getElementById('cfg-total').value = data.total_size;
+    document.getElementById('cfg-unit').value  = data.allocation_unit;
+    document.getElementById('sb-api').textContent = window.location.host || 'localhost:8000';
+  } catch(e) {
+    toast('Cannot reach backend — start the FastAPI server', 'err');
+  }
+}
+
+init();
+</script>
+</body>
+</html>
