@@ -1,110 +1,83 @@
-# MEMSIM — Contiguous Memory Allocation Simulator
+# MemSim — Contiguous Memory Allocation Simulator
 
-A full-stack interactive simulator for OS-style contiguous memory allocation.
-
-## Features
-
-- **Three allocation strategies**: First Fit, Best Fit, Worst Fit
-- **Allocation unit rounding**: Simulates physical vs logical size (internal fragmentation)
-- **Deallocation** with automatic block coalescing
-- **Compaction** to eliminate external fragmentation
-- **Live D3.js memory map** — visual horizontal strip with tooltips
-- **Step-by-step trace** — navigate through every allocation event
-- **Real-time metrics**:
-  - Internal fragmentation per block
-  - External fragmentation (scattered free space)
-  - Total free / allocated memory
-  - Largest free block
-  - Memory utilization %
-- **Black & white brutalist UI** with shadow-hover buttons
-- **Demo scenarios**: Fragmented, Near-Full, Swiss Cheese
+Academic OS project. FastAPI backend + D3.js frontend.
 
 ## Project Structure
 
 ```
 memsim/
 ├── backend/
-│   ├── simulator.py   ← Core allocation engine
-│   └── main.py        ← FastAPI REST API
+│   ├── main.py         ← FastAPI app, all endpoints
+│   ├── models.py       ← Pydantic request/response schemas + Block dataclass
+│   ├── allocator.py    ← First Fit, Best Fit, Worst Fit, Compaction, Init
+│   ├── metrics.py      ← Fragmentation metrics computation
+│   └── export_pdf.py   ← PDF report generation (reportlab)
 ├── frontend/
-│   └── index.html     ← D3.js UI (single file, served by FastAPI)
-├── requirements.txt
-└── run.bat
+│   └── index.html      ← Complete single-file UI (D3.js, no build step)
+└── requirements.txt
 ```
 
 ## Setup & Run
 
-### Prerequisites
-- Python 3.9 - 3.13
-- pip
-
-### Install & Start
-
 ```bash
+# 1. Install dependencies
 cd memsim
 pip install -r requirements.txt
+
+# 2. Start backend
 cd backend
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn main:app --reload
+
+# 3. Open frontend
+# Visit http://localhost:8000
+# The backend serves the frontend automatically.
+# For dev: open frontend/index.html directly and set API = 'http://localhost:8000' in JS.
 ```
 
-Then open: **http://localhost:8000**
+## API Endpoints
 
-Or use the convenience script:
-```bash
-bash run.sh
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET    | /memory/presets | List preset names |
+| POST   | /memory/init | Initialize (seed / manual / preset) |
+| POST   | /memory/allocate | Allocate single process |
+| DELETE | /memory/free/{pid} | Free a process |
+| POST   | /memory/compact | Compact memory |
+| POST   | /memory/batch | Run workload, returns timeline steps |
+| POST   | /memory/compare | Compare all 3 strategies |
+| GET    | /memory/state | Full state snapshot |
+| GET    | /memory/export-state | Export state as JSON |
+| POST   | /export/pdf | Download PDF report |
+
+## Key Design Decisions
+
+- **One global SimState** per server session. Simple and sufficient for academic use.
+- **Seed reproducibility**: `random.Random(seed)` gives identical layouts every time.
+- **Pure allocator functions**: `first_fit`, `best_fit`, `worst_fit` have no side effects.
+- **`/compare` uses isolated state**: never mutates global state; runs 3 fresh simulations.
+- **Event log never has undefined**: `log_event()` always writes all fields.
+- **Frontend is one HTML file**: no build step, no npm, works by opening the file.
+
+## External Fragmentation Formula
+
+```
+external_frag = 1 - (largest_free_block / total_free_space)
 ```
 
-## REST API Reference
+- 0.0 = ideal (all free space is one contiguous block)
+- 1.0 = worst (free space is completely scattered)
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/state` | Full memory state + metrics |
-| POST | `/api/allocate` | Allocate memory for a PID |
-| POST | `/api/free` | Free memory for a PID |
-| POST | `/api/compact` | Run compaction |
-| POST | `/api/reset` | Reset simulator |
-| GET | `/api/log` | Full event log |
-| GET | `/api/metrics` | Fragmentation metrics only |
+Source: Silberschatz, Galvin & Gagne — Operating System Concepts, 10th ed.
 
-### POST /api/allocate
+## Example: Reproduce a Simulation
+
 ```json
+POST /memory/init
 {
-  "pid": "P1",
-  "size": 100,
-  "strategy": "first_fit"  // first_fit | best_fit | worst_fit
+  "mode": "seed",
+  "seed": 42,
+  "total_size": 1024
 }
 ```
 
-### POST /api/free
-```json
-{ "pid": "P1" }
-```
-
-### POST /api/reset
-```json
-{
-  "total_size": 1024,
-  "allocation_unit": 32
-}
-```
-
-## How It Works
-
-### Allocation Unit Rounding
-When a process requests N KB, the simulator rounds up to the nearest multiple of the allocation unit:
-```
-physical_size = ceil(N / unit) * unit
-internal_fragmentation = physical_size - N
-```
-
-### Fragmentation Metrics
-- **Internal fragmentation**: Wasted space inside allocated blocks (rounding overhead)
-- **External fragmentation**: Free space that exists but is too scattered to satisfy requests
-  - `external_frag = total_free - largest_free_block`
-
-### Strategies
-| Strategy | Picks |
-|----------|-------|
-| First Fit | First hole ≥ request |
-| Best Fit | Smallest hole ≥ request |
-| Worst Fit | Largest hole ≥ request |
+The same seed always produces the same layout. Share the seed to reproduce results.

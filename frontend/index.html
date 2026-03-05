@@ -1,1086 +1,1384 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MEMSIM — Contiguous Memory Allocator</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet" />
-  <style>
-    /* ─── Reset & Base ─────────────────────────────────────────────────── */
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MemSim — Memory Allocation Simulator</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<style>
+/* ══════════════════════════════════════════════
+   DESIGN: Industrial precision — monospace grid,
+   stark black/white, scanline texture, data-dense
+   ══════════════════════════════════════════════ */
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;700&display=swap');
 
-    :root {
-      --bg:       #0d0d0d;
-      --surface:  #111111;
-      --border:   #2a2a2a;
-      --border2:  #3f3f3f;
-      --white:    #f0ede8;
-      --dim:      #888888;
-      --dimmer:   #444444;
-      --accent:   #ffffff;
-      --free-bg:  #1a1a1a;
-      --alloc-bg: #f0ede8;
-    }
+:root {
+  --bg:      #f5f5f0;
+  --surface: #ffffff;
+  --border:  #d0d0c8;
+  --ink:     #0a0a0a;
+  --muted:   #888880;
+  --accent:  #0a0a0a;
+  --used:    #1a1a1a;
+  --free:    #f0f0e8;
+  --fail:    #c0392b;
+  --ok:      #1a6b2a;
+  --mono:    'IBM Plex Mono', monospace;
+  --sans:    'IBM Plex Sans', sans-serif;
+  --radius:  2px;
+}
 
-    html, body {
-      height: 100%;
-      background: var(--bg);
-      color: var(--white);
-      font-family: 'IBM Plex Mono', monospace;
-      font-size: 13px;
-      line-height: 1.5;
-      overflow-x: hidden;
-    }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
 
-    /* ─── Layout ────────────────────────────────────────────────────────── */
-    #app {
-      display: grid;
-      grid-template-rows: auto 1fr;
-      grid-template-columns: 1fr;
-      min-height: 100vh;
-    }
+body {
+  font-family: var(--sans);
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.5;
+}
 
-    header {
-      border-bottom: 2px solid var(--border2);
-      padding: 18px 32px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      background: var(--bg);
-      position: sticky;
-      top: 0;
-      z-index: 100;
-    }
+/* ── Layout ─────────────────────────────────── */
+#app { display: grid; grid-template-rows: auto 1fr; min-height: 100vh; }
 
-    .logo {
-      font-family: 'Bebas Neue', sans-serif;
-      font-size: 2rem;
-      letter-spacing: 0.12em;
-      color: var(--white);
-    }
-    .logo span { color: var(--dim); }
+header {
+  background: var(--ink);
+  color: white;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 48px;
+  border-bottom: 2px solid var(--ink);
+  position: sticky; top: 0; z-index: 100;
+}
+.logo {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 2px;
+}
+.logo span { color: #888; font-weight: 400; }
+.header-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: #666;
+  display: flex; gap: 20px;
+}
+.header-meta b { color: #aaa; }
 
-    .header-meta {
-      font-size: 11px;
-      color: var(--dim);
-      text-align: right;
-      font-family: 'Share Tech Mono', monospace;
-    }
+.workspace {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 0;
+}
 
-    main {
-      display: grid;
-      grid-template-columns: 340px 1fr;
-      grid-template-rows: 1fr;
-      gap: 0;
-    }
+/* ── Sidebar ────────────────────────────────── */
+sidebar, .sidebar {
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  height: calc(100vh - 48px);
+  padding: 0;
+  background: var(--surface);
+}
 
-    /* ─── Panel ─────────────────────────────────────────────────────────── */
-    .panel {
-      border-right: 2px solid var(--border);
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
+.panel {
+  border-bottom: 1px solid var(--border);
+}
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--ink);
+  color: white;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  cursor: pointer;
+  user-select: none;
+}
+.panel-header:hover { background: #222; }
+.panel-body { padding: 14px; }
+.panel-body.collapsed { display: none; }
 
-    .panel-section {
-      border-bottom: 1px solid var(--border);
-      padding: 20px 24px;
-    }
+/* ── Main area ─────────────────────────────── */
+.main-area {
+  overflow-y: auto;
+  height: calc(100vh - 48px);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
 
-    .panel-section:last-child { border-bottom: none; flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+/* ── Section cards ─────────────────────────── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.card-title {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  padding: 10px 14px;
+  background: var(--ink);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.card-body { padding: 16px; }
 
-    .section-label {
-      font-family: 'Share Tech Mono', monospace;
-      font-size: 10px;
-      letter-spacing: 0.2em;
-      color: var(--dim);
-      text-transform: uppercase;
-      margin-bottom: 14px;
-    }
+/* ── Form controls ──────────────────────────── */
+label {
+  display: block;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: 1px;
+  margin-bottom: 4px;
+  text-transform: uppercase;
+}
+input, select, textarea {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--ink);
+  outline: none;
+}
+input:focus, select:focus { border-color: var(--ink); }
 
-    /* ─── Config Row ─────────────────────────────────────────────────────── */
-    .config-row {
-      display: flex;
-      gap: 8px;
-      margin-bottom: 8px;
-    }
+.form-row { margin-bottom: 10px; }
+.form-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.form-3col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
 
-    .config-row label {
-      font-size: 11px;
-      color: var(--dim);
-      display: block;
-      margin-bottom: 4px;
-    }
+/* ── Buttons ────────────────────────────────── */
+btn, .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 7px 14px;
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius);
+  cursor: pointer;
+  background: white;
+  color: var(--ink);
+  text-transform: uppercase;
+  transition: all 0.12s;
+  white-space: nowrap;
+}
+.btn:hover { background: var(--ink); color: white; }
+.btn.primary { background: var(--ink); color: white; }
+.btn.primary:hover { background: #333; }
+.btn.danger  { border-color: var(--fail); color: var(--fail); }
+.btn.danger:hover  { background: var(--fail); color: white; }
+.btn.small { padding: 4px 9px; font-size: 10px; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-    .config-row .field { flex: 1; }
+.btn-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
 
-    /* ─── Inputs ─────────────────────────────────────────────────────────── */
-    input[type="text"],
-    input[type="number"],
-    select {
-      width: 100%;
-      background: var(--surface);
-      border: 1px solid var(--border2);
-      color: var(--white);
-      font-family: 'IBM Plex Mono', monospace;
-      font-size: 13px;
-      padding: 8px 10px;
-      outline: none;
-      transition: border-color 0.15s;
-      -webkit-appearance: none;
-      appearance: none;
-    }
+/* ── Memory Map (D3) ─────────────────────────── */
+#memory-map-svg {
+  width: 100%;
+  font-family: var(--mono);
+}
+.block-rect { cursor: pointer; transition: opacity 0.15s; }
+.block-rect:hover { opacity: 0.8; }
+.block-rect.used   { fill: var(--used); stroke: #000; stroke-width: 1; }
+.block-rect.free   { fill: var(--free); stroke: #bbb; stroke-width: 1; }
+.block-rect.highlight { fill: #444; stroke: #000; stroke-width: 2; }
+.block-rect.int-frag { fill: #666; }  /* internal frag region */
+.block-label { font-size: 10px; fill: #fff; pointer-events: none; font-family: var(--mono); }
+.block-label.free-label { fill: #999; }
+.addr-label { font-size: 9px; fill: var(--muted); font-family: var(--mono); }
 
-    input:focus, select:focus {
-      border-color: var(--white);
-    }
+/* ── Tooltip ────────────────────────────────── */
+#tooltip {
+  position: fixed;
+  display: none;
+  background: var(--ink);
+  color: white;
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 8px 12px;
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 1000;
+  line-height: 1.8;
+  border: 1px solid #444;
+  min-width: 140px;
+}
+#tooltip .tt-title { font-weight: 700; border-bottom: 1px solid #444; margin-bottom: 4px; padding-bottom: 4px; }
+#tooltip .tt-row { display: flex; justify-content: space-between; gap: 12px; }
+#tooltip .tt-val { color: #aaa; }
 
-    select {
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23888'/%3E%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: right 10px center;
-      padding-right: 28px;
-    }
+/* ── Charts ─────────────────────────────────── */
+#frag-svg { width: 100%; }
+.grid line { stroke: var(--border); stroke-dasharray: 2,3; }
+.axis-label { font-family: var(--mono); font-size: 10px; fill: var(--muted); }
 
-    /* ─── Buttons ─────────────────────────────────────────────────────────── */
-    .btn {
-      font-family: 'Share Tech Mono', monospace;
-      font-size: 12px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      padding: 10px 16px;
-      border: 1px solid var(--border2);
-      background: transparent;
-      color: var(--white);
-      cursor: pointer;
-      transition: all 0.12s ease;
-      box-shadow: none;
-      position: relative;
-    }
+/* ── Metrics grid ───────────────────────────── */
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 0;
+}
+.metric-box {
+  border: 1px solid var(--border);
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+.metric-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--muted);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.metric-value {
+  font-family: var(--mono);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+.metric-value.warn { color: #c0392b; }
+.metric-value.ok   { color: #1a6b2a; }
 
-    .btn:hover {
-      background: var(--white);
-      color: var(--bg);
-      border-color: var(--white);
-      box-shadow: 4px 4px 0px rgba(240,237,232,0.25);
-      transform: translate(-1px, -1px);
-    }
+/* ── Event log ──────────────────────────────── */
+#event-log-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+#event-log-table th {
+  background: #f0f0e8;
+  padding: 5px 8px;
+  text-align: left;
+  font-size: 9px;
+  letter-spacing: 1px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  text-transform: uppercase;
+  position: sticky; top: 0;
+}
+#event-log-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid #eee;
+}
+#event-log-table tr:last-child td { border-bottom: none; }
+.log-ALLOC  td:first-child { border-left: 3px solid #1a6b2a; }
+.log-FREE   td:first-child { border-left: 3px solid #2980b9; }
+.log-COMPACT td:first-child { border-left: 3px solid #8e44ad; }
+.log-FAIL   td:first-child { border-left: 3px solid var(--fail); }
+.log-FAIL   { color: var(--fail); }
+#event-log-container { max-height: 200px; overflow-y: auto; }
 
-    .btn:active {
-      transform: translate(1px, 1px);
-      box-shadow: none;
-    }
+/* ── Strategy Comparison ─────────────────────── */
+#compare-table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+#compare-table-wrap th {
+  background: var(--ink);
+  color: white;
+  padding: 7px 12px;
+  text-align: left;
+  font-size: 10px;
+  letter-spacing: 1px;
+}
+#compare-table-wrap td {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+#compare-table-wrap tr:nth-child(even) td { background: var(--bg); }
+.best-col { font-weight: 700; }
 
-    .btn-primary {
-      background: var(--white);
-      color: var(--bg);
-      border-color: var(--white);
-    }
+/* ── Batch table ─────────────────────────────── */
+#batch-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11px; table-layout: fixed; }
+#batch-table th { background: #f0f0e8; padding: 5px 4px; font-size: 9px; letter-spacing: 0.5px; color: var(--muted); border-bottom: 1px solid var(--border); text-align: left; text-transform: uppercase; overflow: hidden; white-space: nowrap; }
+#batch-table td { padding: 4px 3px; border-bottom: 1px solid #eee; overflow: hidden; }
+#batch-table input, #batch-table select { padding: 3px 4px; font-size: 11px; width: 100%; min-width: 0; }
+#batch-table .col-pid    { width: 46px; }
+#batch-table .col-size   { width: 50px; }
+#batch-table .col-action { width: 82px; }
+#batch-table .col-strat  { width: 88px; }
+#batch-table .col-del    { width: 26px; }
 
-    .btn-primary:hover {
-      box-shadow: 6px 6px 0px rgba(240,237,232,0.3);
-    }
+/* ── Tabs ────────────────────────────────────── */
+.tab-bar {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.tab {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 9px 16px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.tab:hover { color: var(--ink); }
+.tab.active { color: var(--ink); border-bottom-color: var(--ink); }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
 
-    .btn-danger:hover {
-      background: #ff3333;
-      color: #fff;
-      border-color: #ff3333;
-      box-shadow: 4px 4px 0px rgba(255,51,51,0.3);
-    }
+/* ── Playback controls ───────────────────────── */
+.playback-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+#playback-slider { flex: 1; accent-color: var(--ink); }
+#playback-step-label { min-width: 60px; color: var(--muted); }
 
-    .btn-full { width: 100%; }
+/* ── Status bar ──────────────────────────────── */
+#status-bar {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  height: 26px;
+  background: var(--ink);
+  color: #888;
+  font-family: var(--mono);
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  gap: 20px;
+  z-index: 100;
+}
+#status-bar .ok   { color: #6be86b; }
+#status-bar .err  { color: #e86b6b; }
+#status-msg { flex: 1; }
 
-    .btn-group {
-      display: flex;
-      gap: 8px;
-    }
+/* ── Mini memory maps (comparison) ──────────── */
+.mini-maps { display: flex; gap: 12px; flex-wrap: wrap; }
+.mini-map-wrap { flex: 1; min-width: 200px; }
+.mini-map-label { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 1px; }
 
-    /* ─── Form grid ──────────────────────────────────────────────────────── */
-    .form-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-      margin-bottom: 10px;
-    }
-    .form-grid.three { grid-template-columns: 1fr 1fr 1fr; }
-
-    .field-label {
-      font-size: 10px;
-      color: var(--dim);
-      margin-bottom: 4px;
-      letter-spacing: 0.1em;
-    }
-
-    /* ─── Right column ──────────────────────────────────────────────────── */
-    .viz-col {
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
-
-    /* ─── Memory Strip ───────────────────────────────────────────────────── */
-    #mem-strip-wrap {
-      padding: 24px 32px 16px;
-      border-bottom: 1px solid var(--border);
-      flex-shrink: 0;
-    }
-
-    #mem-strip-label {
-      font-family: 'Share Tech Mono', monospace;
-      font-size: 10px;
-      letter-spacing: 0.2em;
-      color: var(--dim);
-      text-transform: uppercase;
-      margin-bottom: 10px;
-    }
-
-    #mem-strip-svg {
-      width: 100%;
-      display: block;
-    }
-
-    .mem-block { cursor: default; }
-    .mem-block rect { transition: opacity 0.2s; }
-    .mem-block:hover rect { opacity: 0.85; }
-
-    .mem-tooltip {
-      position: fixed;
-      background: var(--bg);
-      border: 1px solid var(--border2);
-      padding: 10px 14px;
-      font-size: 11px;
-      font-family: 'Share Tech Mono', monospace;
-      pointer-events: none;
-      z-index: 1000;
-      display: none;
-      line-height: 1.8;
-      white-space: pre;
-    }
-
-    /* ─── Bottom split ───────────────────────────────────────────────────── */
-    .bottom-split {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      flex: 1;
-      overflow: hidden;
-    }
-
-    /* ─── Metrics ─────────────────────────────────────────────────────────── */
-    #metrics-col {
-      border-right: 1px solid var(--border);
-      padding: 20px 24px;
-      overflow-y: auto;
-    }
-
-    .metric-card {
-      margin-bottom: 12px;
-    }
-
-    .metric-name {
-      font-size: 10px;
-      color: var(--dim);
-      letter-spacing: 0.15em;
-      text-transform: uppercase;
-      margin-bottom: 2px;
-    }
-
-    .metric-value {
-      font-family: 'Bebas Neue', sans-serif;
-      font-size: 2rem;
-      color: var(--white);
-      line-height: 1;
-    }
-
-    .metric-unit {
-      font-family: 'Share Tech Mono', monospace;
-      font-size: 11px;
-      color: var(--dim);
-    }
-
-    .utilization-bar {
-      height: 4px;
-      background: var(--border);
-      margin-top: 12px;
-      margin-bottom: 4px;
-      position: relative;
-    }
-
-    .utilization-bar-fill {
-      height: 100%;
-      background: var(--white);
-      transition: width 0.4s ease;
-    }
-
-    .util-label {
-      font-size: 10px;
-      color: var(--dim);
-      display: flex;
-      justify-content: space-between;
-    }
-
-    /* ─── Table ──────────────────────────────────────────────────────────── */
-    #table-col {
-      overflow-y: auto;
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 11px;
-    }
-
-    thead {
-      position: sticky;
-      top: 0;
-      background: var(--bg);
-      z-index: 10;
-    }
-
-    th {
-      text-align: left;
-      padding: 10px 14px;
-      font-family: 'Share Tech Mono', monospace;
-      font-size: 10px;
-      letter-spacing: 0.15em;
-      color: var(--dim);
-      text-transform: uppercase;
-      border-bottom: 1px solid var(--border);
-      border-right: 1px solid var(--border);
-    }
-
-    td {
-      padding: 9px 14px;
-      border-bottom: 1px solid var(--border);
-      border-right: 1px solid var(--border);
-      font-family: 'Share Tech Mono', monospace;
-    }
-
-    tr.row-free td { color: var(--dimmer); }
-    tr.row-alloc td { color: var(--white); }
-    tr.row-alloc td:first-child { font-weight: 600; }
-
-    /* ─── Log ────────────────────────────────────────────────────────────── */
-    #log-col {
-      border-top: 1px solid var(--border);
-      display: flex;
-      flex-direction: column;
-    }
-
-    #log-inner {
-      flex: 1;
-      overflow-y: auto;
-      padding: 12px 16px;
-      font-family: 'Share Tech Mono', monospace;
-      font-size: 11px;
-      line-height: 1.8;
-    }
-
-    .log-entry {
-      display: flex;
-      gap: 12px;
-      padding: 3px 0;
-      border-bottom: 1px solid #1c1c1c;
-      animation: fadeIn 0.2s ease;
-    }
-
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateX(-6px); }
-      to   { opacity: 1; transform: translateX(0); }
-    }
-
-    .log-time { color: var(--dimmer); flex-shrink: 0; width: 26px; text-align: right; }
-    .log-action { width: 80px; flex-shrink: 0; }
-    .log-action.ALLOC     { color: #c8f7c5; }
-    .log-action.FREE      { color: #f7d6c5; }
-    .log-action.COMPACT   { color: #c5d6f7; }
-    .log-action.RESET     { color: #f7f7c5; }
-    .log-action.INIT      { color: var(--dim); }
-    .log-action.ALLOC_FAIL{ color: #f7c5c5; }
-    .log-action.FREE_FAIL { color: #f7c5c5; }
-    .log-msg { color: var(--dim); }
-
-    /* ─── Step trace nav ─────────────────────────────────────────────────── */
-    #step-nav {
-      display: flex;
-      gap: 8px;
-      padding: 10px 16px;
-      border-top: 1px solid var(--border);
-      flex-shrink: 0;
-    }
-
-    #step-nav .step-info {
-      flex: 1;
-      font-family: 'Share Tech Mono', monospace;
-      font-size: 11px;
-      color: var(--dim);
-      display: flex;
-      align-items: center;
-    }
-
-    /* ─── Status bar ─────────────────────────────────────────────────────── */
-    #status-bar {
-      position: fixed;
-      bottom: 0;
-      left: 0;
-      right: 0;
-      background: var(--bg);
-      border-top: 1px solid var(--border);
-      padding: 4px 32px;
-      font-family: 'Share Tech Mono', monospace;
-      font-size: 10px;
-      color: var(--dim);
-      display: flex;
-      gap: 24px;
-      z-index: 200;
-    }
-
-    #status-bar span { color: var(--white); }
-
-    /* ─── Toast ─────────────────────────────────────────────────────────── */
-    #toast {
-      position: fixed;
-      top: 72px;
-      right: 24px;
-      background: var(--bg);
-      border: 1px solid var(--border2);
-      padding: 12px 18px;
-      font-family: 'Share Tech Mono', monospace;
-      font-size: 12px;
-      z-index: 999;
-      opacity: 0;
-      transition: opacity 0.2s;
-      pointer-events: none;
-      max-width: 360px;
-    }
-
-    #toast.show { opacity: 1; }
-    #toast.ok   { border-left: 3px solid #c8f7c5; }
-    #toast.err  { border-left: 3px solid #f7c5c5; }
-    #toast.info { border-left: 3px solid #c5d6f7; }
-
-    /* ─── Scrollbar ─────────────────────────────────────────────────────── */
-    ::-webkit-scrollbar { width: 4px; height: 4px; }
-    ::-webkit-scrollbar-track { background: var(--bg); }
-    ::-webkit-scrollbar-thumb { background: var(--border2); }
-
-    /* ─── Responsive ─────────────────────────────────────────────────────── */
-    @media (max-width: 900px) {
-      main { grid-template-columns: 1fr; }
-      .panel { border-right: none; border-bottom: 2px solid var(--border); }
-      .bottom-split { grid-template-columns: 1fr; }
-    }
-  </style>
+/* ── Seed badge ──────────────────────────────── */
+.seed-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--mono);
+  font-size: 10px;
+  background: #f0f0e8;
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.seed-badge:hover { background: var(--border); }
+</style>
 </head>
 <body>
+
 <div id="app">
-  <header>
-    <div class="logo">MEM<span>SIM</span></div>
-    <div class="header-meta">
-      CONTIGUOUS MEMORY ALLOCATION SIMULATOR<br>
-      FIRST FIT · BEST FIT · WORST FIT
-    </div>
-  </header>
 
-  <main>
-    <!-- ─── Left Panel ─────────────────────────────────────────── -->
-    <aside class="panel">
+<!-- ── HEADER ──────────────────────────────────────────────────────── -->
+<header>
+  <div class="logo">MEM<span>/</span>SIM</div>
+  <div class="header-meta">
+    <span>SEED: <b id="hdr-seed">—</b></span>
+    <span>TOTAL: <b id="hdr-total">—</b></span>
+    <span>TICK: <b id="hdr-tick">0</b></span>
+    <span id="hdr-status" class="ok">READY</span>
+  </div>
+</header>
 
-      <!-- Config -->
-      <div class="panel-section">
-        <div class="section-label">System Config</div>
-        <div class="form-grid">
-          <div>
-            <div class="field-label">TOTAL MEM (KB)</div>
-            <input type="number" id="cfg-total" value="1024" min="64" step="64" />
-          </div>
-          <div>
-            <div class="field-label">ALLOC UNIT (KB)</div>
-            <input type="number" id="cfg-unit" value="32" min="4" step="4" />
-          </div>
-        </div>
-        <button class="btn btn-full" id="btn-reset">⟳ RESET MEMORY</button>
+<div class="workspace">
+
+<!-- ── SIDEBAR ─────────────────────────────────────────────────────── -->
+<div class="sidebar">
+
+  <!-- Initialize -->
+  <div class="panel">
+    <div class="panel-header" onclick="togglePanel(this)">▶ INITIALIZE MEMORY</div>
+    <div class="panel-body">
+      <div class="form-row">
+        <label>Mode</label>
+        <select id="init-mode" onchange="onInitModeChange()">
+          <option value="seed">Seed (Reproducible)</option>
+          <option value="preset">Preset Layout</option>
+          <option value="manual">Manual JSON</option>
+        </select>
       </div>
 
-      <!-- Allocate -->
-      <div class="panel-section">
-        <div class="section-label">Allocate</div>
-        <div class="form-grid three">
-          <div>
-            <div class="field-label">PID</div>
-            <input type="text" id="alloc-pid" value="P1" placeholder="P1" />
-          </div>
-          <div>
-            <div class="field-label">SIZE (KB)</div>
-            <input type="number" id="alloc-size" value="100" min="1" />
-          </div>
-          <div>
-            <div class="field-label">STRATEGY</div>
-            <select id="alloc-strategy">
-              <option value="first_fit">FIRST</option>
-              <option value="best_fit">BEST</option>
-              <option value="worst_fit">WORST</option>
-            </select>
-          </div>
-        </div>
-        <div class="hint" id="rounding-hint" style="font-size:10px;color:var(--dim);margin-bottom:10px;font-family:'Share Tech Mono',monospace;"></div>
-        <button class="btn btn-primary btn-full" id="btn-alloc">▶ ALLOCATE</button>
+      <div id="init-seed-row" class="form-row">
+        <label>Seed</label>
+        <input id="init-seed" type="number" value="42" min="0">
       </div>
-
-      <!-- Free -->
-      <div class="panel-section">
-        <div class="section-label">Deallocate</div>
-        <div class="form-grid">
-          <div>
-            <div class="field-label">PID TO FREE</div>
-            <input type="text" id="free-pid" placeholder="P1" />
-          </div>
-          <div style="display:flex;align-items:flex-end;">
-            <button class="btn btn-danger btn-full" id="btn-free">✕ FREE</button>
-          </div>
-        </div>
+      <div id="init-size-row" class="form-row">
+        <label>Total Size (bytes)</label>
+        <input id="init-size" type="number" value="1024" min="128" step="128">
       </div>
-
-      <!-- Compact -->
-      <div class="panel-section">
-        <div class="section-label">Compaction</div>
-        <p style="font-size:11px;color:var(--dim);margin-bottom:12px;line-height:1.6;">
-          Slides all allocated blocks to the front of memory, coalescing all free space into one contiguous region.
-        </p>
-        <button class="btn btn-full" id="btn-compact">⊞ COMPACT MEMORY</button>
+      <div id="init-preset-row" class="form-row" style="display:none">
+        <label>Preset</label>
+        <select id="init-preset">
+          <option value="clean">Clean (one free block)</option>
+          <option value="fragmented">Fragmented</option>
+          <option value="uniform">Uniform (8 equal blocks)</option>
+          <option value="mostly_used">Mostly Used</option>
+        </select>
       </div>
-
-      <!-- Quick fill -->
-      <div class="panel-section">
-        <div class="section-label">Quick Fill Scenario</div>
-        <div class="btn-group" style="flex-wrap:wrap;gap:6px;">
-          <button class="btn" id="demo-fragmented" style="font-size:11px;padding:7px 10px;">FRAGMENTED</button>
-          <button class="btn" id="demo-full" style="font-size:11px;padding:7px 10px;">NEAR FULL</button>
-          <button class="btn" id="demo-swiss" style="font-size:11px;padding:7px 10px;">SWISS CHEESE</button>
-        </div>
+      <div id="init-manual-row" class="form-row" style="display:none">
+        <label>Blocks JSON</label>
+        <textarea id="init-manual-json" rows="5" style="font-size:10px">[
+  {"start":0,"size":300,"status":"used","pid":"P1"},
+  {"start":300,"size":200,"status":"free"},
+  {"start":500,"size":524,"status":"free"}
+]</textarea>
       </div>
-
-      <!-- Log section -->
-      <div class="panel-section" style="flex:1;overflow:hidden;display:flex;flex-direction:column;">
-        <div class="section-label">Event Log</div>
-        <div id="log-inner"></div>
-        <div id="step-nav">
-          <button class="btn" id="btn-step-prev" style="padding:6px 12px;">◀</button>
-          <div class="step-info" id="step-info">LIVE</div>
-          <button class="btn" id="btn-step-next" style="padding:6px 12px;">▶</button>
-          <button class="btn" id="btn-step-live" style="padding:6px 12px;font-size:10px;">LIVE</button>
-        </div>
-      </div>
-    </aside>
-
-    <!-- ─── Right Column ───────────────────────────────────────── -->
-    <div class="viz-col">
-      <div id="mem-strip-wrap">
-        <div id="mem-strip-label">PHYSICAL MEMORY MAP</div>
-        <svg id="mem-strip-svg" height="80"></svg>
-        <div id="addr-labels" style="font-family:'Share Tech Mono',monospace;font-size:9px;color:var(--dim);display:flex;justify-content:space-between;margin-top:4px;"></div>
-      </div>
-
-      <div class="bottom-split">
-        <!-- Metrics -->
-        <div id="metrics-col">
-          <div class="section-label" style="padding:16px 24px 0;font-family:'Share Tech Mono';font-size:10px;letter-spacing:.2em;color:var(--dim);">FRAGMENTATION METRICS</div>
-
-          <div style="padding: 12px 24px;">
-            <div class="utilization-bar">
-              <div class="utilization-bar-fill" id="util-fill" style="width:0%"></div>
-            </div>
-            <div class="util-label">
-              <span>UTILIZATION</span>
-              <span id="util-pct">0%</span>
-            </div>
-          </div>
-
-          <div style="padding: 0 24px; display:grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-            <div class="metric-card">
-              <div class="metric-name">Total Free</div>
-              <div class="metric-value" id="m-total-free">—</div>
-              <div class="metric-unit">KB</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-name">Total Allocated</div>
-              <div class="metric-value" id="m-total-alloc">—</div>
-              <div class="metric-unit">KB</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-name">Internal Frag.</div>
-              <div class="metric-value" id="m-int-frag">—</div>
-              <div class="metric-unit">KB</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-name">External Frag.</div>
-              <div class="metric-value" id="m-ext-frag">—</div>
-              <div class="metric-unit">KB</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-name">Largest Free Block</div>
-              <div class="metric-value" id="m-largest">—</div>
-              <div class="metric-unit">KB</div>
-            </div>
-            <div class="metric-card">
-              <div class="metric-name">Free Regions</div>
-              <div class="metric-value" id="m-free-regions">—</div>
-              <div class="metric-unit">blocks</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Block Table -->
-        <div id="table-col">
-          <table id="block-table">
-            <thead>
-              <tr>
-                <th>PID</th>
-                <th>START</th>
-                <th>END</th>
-                <th>PHYS KB</th>
-                <th>LOGIC KB</th>
-                <th>INT FRAG</th>
-              </tr>
-            </thead>
-            <tbody id="block-tbody"></tbody>
-          </table>
-        </div>
+      <button class="btn primary" style="width:100%" onclick="initMemory()">INITIALIZE</button>
+      <div class="btn-row">
+        <button class="btn small" onclick="exportState()">EXPORT STATE</button>
       </div>
     </div>
-  </main>
-</div>
+  </div>
 
-<!-- Tooltip -->
-<div class="mem-tooltip" id="tooltip"></div>
+  <!-- Allocate -->
+  <div class="panel">
+    <div class="panel-header" onclick="togglePanel(this)">▶ ALLOCATE PROCESS</div>
+    <div class="panel-body">
+      <div class="form-2col">
+        <div class="form-row">
+          <label>PID</label>
+          <input id="alloc-pid" value="P1">
+        </div>
+        <div class="form-row">
+          <label>Size (bytes)</label>
+          <input id="alloc-size" type="number" value="100" min="1">
+        </div>
+      </div>
+      <div class="form-row">
+        <label>Strategy</label>
+        <select id="alloc-strategy">
+          <option value="first_fit">First Fit</option>
+          <option value="best_fit">Best Fit</option>
+          <option value="worst_fit">Worst Fit</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Requested Size (optional — for internal frag)</label>
+        <input id="alloc-req-size" type="number" placeholder="leave blank = same as size">
+      </div>
+      <button class="btn primary" style="width:100%" onclick="allocateProcess()">ALLOCATE</button>
+    </div>
+  </div>
 
-<!-- Toast -->
-<div id="toast"></div>
+  <!-- Free -->
+  <div class="panel">
+    <div class="panel-header" onclick="togglePanel(this)">▶ FREE PROCESS</div>
+    <div class="panel-body">
+      <div class="form-row">
+        <label>PID to Free</label>
+        <input id="free-pid" value="P1">
+      </div>
+      <div class="btn-row">
+        <button class="btn" onclick="freeProcess()">FREE PID</button>
+        <button class="btn" onclick="compactMemory()">COMPACT</button>
+      </div>
+    </div>
+  </div>
 
-<!-- Status bar -->
+  <!-- Batch -->
+  <div class="panel">
+    <div class="panel-header" onclick="togglePanel(this)">▶ BATCH WORKLOAD</div>
+    <div class="panel-body">
+      <div style="overflow-x:auto; margin-bottom:8px;">
+        <table id="batch-table">
+          <colgroup>
+            <col class="col-pid"><col class="col-size"><col class="col-action"><col class="col-strat"><col class="col-del">
+          </colgroup>
+          <thead><tr>
+            <th>PID</th><th>Size</th><th>Action</th><th>Strategy</th><th></th>
+          </tr></thead>
+          <tbody id="batch-rows"></tbody>
+        </table>
+      </div>
+      <div class="btn-row">
+        <button class="btn small" onclick="addBatchRow()">+ PROCESS</button>
+        <button class="btn primary small" onclick="runBatch()">RUN BATCH</button>
+        <button class="btn small" onclick="clearBatch()">CLEAR</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Compare -->
+  <div class="panel">
+    <div class="panel-header" onclick="togglePanel(this)">▶ STRATEGY COMPARE</div>
+    <div class="panel-body">
+      <p style="font-size:11px;color:var(--muted);margin-bottom:8px">
+        Runs the batch workload above with all 3 strategies on a fresh copy of the current init config.
+      </p>
+      <div class="form-row">
+        <label>Init mode for comparison</label>
+        <select id="compare-init-mode">
+          <option value="seed">Current Seed</option>
+          <option value="preset">Current Preset</option>
+        </select>
+      </div>
+      <button class="btn primary" style="width:100%" onclick="runComparison()">RUN COMPARISON</button>
+    </div>
+  </div>
+
+  <!-- PDF export -->
+  <div class="panel">
+    <div class="panel-header" onclick="togglePanel(this)">▶ EXPORT</div>
+    <div class="panel-body">
+      <button class="btn" style="width:100%" onclick="downloadPDF()">⬇ PDF REPORT</button>
+      <div style="height:6px"></div>
+      <button class="btn small" onclick="clearAll()">RESET SIMULATION</button>
+    </div>
+  </div>
+
+</div><!-- /sidebar -->
+
+<!-- ── MAIN AREA ────────────────────────────────────────────────────── -->
+<div class="main-area">
+
+  <!-- Metrics -->
+  <div class="card">
+    <div class="card-title">MEMORY METRICS</div>
+    <div class="card-body">
+      <div class="metrics-grid">
+        <div class="metric-box">
+          <div class="metric-label">External Frag</div>
+          <div class="metric-value" id="m-ext-frag">—</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">Internal Frag</div>
+          <div class="metric-value" id="m-int-frag">—</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">Free Space</div>
+          <div class="metric-value" id="m-free">—</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">Utilization</div>
+          <div class="metric-value" id="m-util">—</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">Largest Free</div>
+          <div class="metric-value" id="m-largest">—</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">Free Blocks</div>
+          <div class="metric-value" id="m-nfree">—</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">Used Blocks</div>
+          <div class="metric-value" id="m-nused">—</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">Total Size</div>
+          <div class="metric-value" id="m-total">—</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Memory Map -->
+  <div class="card">
+    <div class="card-title">
+      MEMORY MAP
+      <div style="display:flex;gap:8px;font-size:10px;font-weight:400">
+        <span>■ USED</span>
+        <span style="color:#aaa">□ FREE</span>
+        <span style="color:#666">▪ INT.FRAG</span>
+      </div>
+    </div>
+    <div class="card-body" style="padding:10px 14px 4px">
+      <svg id="memory-map-svg" style="height:120px"></svg>
+    </div>
+    <!-- Playback bar (shown during batch replay) -->
+    <div class="playback-bar" id="playback-bar" style="display:none">
+      <button class="btn small" onclick="playbackPrev()">◀</button>
+      <input type="range" id="playback-slider" min="0" value="0" oninput="playbackSeek(this.value)">
+      <button class="btn small" onclick="playbackNext()">▶</button>
+      <button class="btn small" id="play-btn" onclick="togglePlayback()">▶ PLAY</button>
+      <span id="playback-step-label">0 / 0</span>
+    </div>
+  </div>
+
+  <!-- Tabs: Frag Graph | Event Log | Comparison -->
+  <div class="card" style="flex:1">
+    <div class="tab-bar">
+      <div class="tab active" onclick="switchTab('frag-tab', this)">FRAGMENTATION GRAPH</div>
+      <div class="tab" onclick="switchTab('log-tab', this)">EVENT LOG</div>
+      <div class="tab" onclick="switchTab('compare-tab', this)">STRATEGY COMPARISON</div>
+    </div>
+
+    <!-- Frag graph -->
+    <div class="tab-panel active" id="frag-tab">
+      <div style="padding:14px">
+        <svg id="frag-svg" style="height:220px"></svg>
+      </div>
+    </div>
+
+    <!-- Event log -->
+    <div class="tab-panel" id="log-tab">
+      <div id="event-log-container">
+        <table id="event-log-table">
+          <thead><tr>
+            <th>TICK</th><th>TYPE</th><th>PID</th>
+            <th>STRATEGY</th><th>START</th><th>SIZE</th><th>REASON</th>
+          </tr></thead>
+          <tbody id="log-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Strategy comparison -->
+    <div class="tab-panel" id="compare-tab">
+      <div style="padding:14px">
+        <div id="compare-placeholder" style="color:var(--muted);font-family:var(--mono);font-size:11px;padding:20px 0">
+          Run a strategy comparison to see results here.
+        </div>
+        <div id="compare-table-wrap" style="display:none"></div>
+        <div class="mini-maps" id="compare-mini-maps" style="margin-top:14px"></div>
+      </div>
+    </div>
+
+  </div>
+
+</div><!-- /main-area -->
+</div><!-- /workspace -->
+</div><!-- /app -->
+
+<div id="tooltip"></div>
 <div id="status-bar">
-  TOTAL: <span id="sb-total">—</span> KB &nbsp;|&nbsp;
-  UNIT: <span id="sb-unit">—</span> KB &nbsp;|&nbsp;
-  BLOCKS: <span id="sb-blocks">—</span> &nbsp;|&nbsp;
-  API: <span id="sb-api">localhost:8000</span>
+  <span id="status-msg">Ready — initialize memory to begin.</span>
+  <span>MEMSIM v1.0</span>
 </div>
 
+<!-- ══════════════════════════════════════════════════════════════════
+     JAVASCRIPT
+     ══════════════════════════════════════════════════════════════════ -->
 <script>
-/* ─────────────────────────────────────────────────────────────────────────
-   MEMSIM Frontend
-   ───────────────────────────────────────────────────────────────────────── */
+const API = '';   // same origin; change to 'http://localhost:8000' for dev
 
-const API = '';  // Same origin; change if needed e.g. 'http://localhost:8000'
-let state = null;
-let eventLog = [];
-let stepIdx = -1; // -1 = live
-let allocIdCounter = 1;
+// ── Global state ───────────────────────────────────────────────────────────
+let gState      = null;   // full server state
+let gBatchSteps = [];     // batch replay steps
+let gPlayIdx    = 0;
+let gPlayTimer  = null;
+let gLastComp   = null;   // last comparison result
+let gInitConfig = {};     // last init config (for compare)
 
-/* ─── Palette for PIDs ─────────────────────────────────────────────────── */
-const PID_COLORS = [
-  '#e8e8e8','#c8c8c8','#a8a8a8','#d0d0d0',
-  '#b8b8b8','#989898','#f0f0f0','#d8d8d8',
-];
-const pidColorMap = {};
-let colorIdx = 0;
-function pidColor(pid) {
-  if (!pidColorMap[pid]) {
-    pidColorMap[pid] = PID_COLORS[colorIdx++ % PID_COLORS.length];
+// ── API helpers ────────────────────────────────────────────────────────────
+async function api(method, path, body) {
+  setStatus('loading', '...');
+  try {
+    const opts = { method, headers: { 'Content-Type': 'application/json' } };
+    if (body) opts.body = JSON.stringify(body);
+    const res = await fetch(API + path, opts);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
+    setStatus('ok', 'OK');
+    return data;
+  } catch(e) {
+    setStatus('err', e.message);
+    console.error(e);
+    return null;
   }
-  return pidColorMap[pid];
 }
 
-/* ─── API helpers ──────────────────────────────────────────────────────── */
-async function api(path, method = 'GET', body = null) {
-  const opts = { method, headers: { 'Content-Type': 'application/json' } };
-  if (body) opts.body = JSON.stringify(body);
-  const res = await fetch(API + path, opts);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || res.statusText);
-  }
-  return res.json();
-}
-
-/* ─── Toast ────────────────────────────────────────────────────────────── */
-let toastTimer;
-function toast(msg, type = 'info') {
-  const el = document.getElementById('toast');
+function setStatus(type, msg) {
+  const el = document.getElementById('status-msg');
+  const hdr = document.getElementById('hdr-status');
   el.textContent = msg;
-  el.className = `show ${type}`;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.className = '', 2800);
+  el.className = type === 'err' ? 'err' : (type === 'ok' ? 'ok' : '');
+  hdr.textContent = type === 'loading' ? 'BUSY' : (type === 'err' ? 'ERROR' : 'OK');
+  hdr.className = type === 'err' ? 'err' : 'ok';
 }
 
-/* ─── Main render ──────────────────────────────────────────────────────── */
-function render(s) {
-  state = s;
-  renderStrip(s.blocks, s.total_size);
-  renderTable(s.blocks);
-  renderMetrics(s.metrics);
-  renderStatusBar(s);
+// ── Initialization ─────────────────────────────────────────────────────────
+function onInitModeChange() {
+  const mode = document.getElementById('init-mode').value;
+  document.getElementById('init-seed-row').style.display    = mode === 'seed'   ? '' : 'none';
+  document.getElementById('init-size-row').style.display    = mode !== 'preset' ? '' : 'none';
+  document.getElementById('init-preset-row').style.display  = mode === 'preset' ? '' : 'none';
+  document.getElementById('init-manual-row').style.display  = mode === 'manual' ? '' : 'none';
 }
 
-/* ─── Memory Strip ─────────────────────────────────────────────────────── */
-function renderStrip(blocks, total) {
-  const svg = d3.select('#mem-strip-svg');
-  const wrap = document.getElementById('mem-strip-wrap');
-  const W = wrap.clientWidth - 48;
-  const H = 80;
-  svg.attr('viewBox', `0 0 ${W} ${H}`);
+async function initMemory() {
+  const mode = document.getElementById('init-mode').value;
+  let body = { mode };
 
-  const tooltip = document.getElementById('tooltip');
-
-  svg.selectAll('*').remove();
-
-  const scale = W / total;
-
-  blocks.forEach((b, i) => {
-    const x = b.start * scale;
-    const w = Math.max(b.size * scale - 1, 1);
-    const isFree = b.is_free;
-
-    const g = svg.append('g')
-      .attr('class', 'mem-block')
-      .attr('transform', `translate(${x}, 0)`);
-
-    // Main rect
-    g.append('rect')
-      .attr('x', 0).attr('y', 0)
-      .attr('width', w).attr('height', H - 16)
-      .attr('fill', isFree ? 'transparent' : pidColor(b.pid))
-      .attr('stroke', isFree ? '#2a2a2a' : '#555')
-      .attr('stroke-width', isFree ? 1 : 0);
-
-    // Crosshatch for free
-    if (isFree) {
-      const patId = `hatch-${i}`;
-      const defs = svg.append('defs');
-      const pat = defs.append('pattern')
-        .attr('id', patId).attr('patternUnits','userSpaceOnUse')
-        .attr('width', 8).attr('height', 8)
-        .attr('patternTransform','rotate(45)');
-      pat.append('line')
-        .attr('x1',0).attr('y1',0).attr('x2',0).attr('y2',8)
-        .attr('stroke','#1f1f1f').attr('stroke-width',1);
-      g.select('rect').attr('fill', `url(#${patId})`);
+  if (mode === 'seed') {
+    body.seed       = parseInt(document.getElementById('init-seed').value) || 0;
+    body.total_size = parseInt(document.getElementById('init-size').value) || 1024;
+    gInitConfig = { mode: 'seed', seed: body.seed, total_size: body.total_size };
+  } else if (mode === 'preset') {
+    body.preset = document.getElementById('init-preset').value;
+    gInitConfig = { mode: 'preset', preset: body.preset };
+  } else {
+    body.total_size = parseInt(document.getElementById('init-size').value) || 1024;
+    try {
+      body.blocks = JSON.parse(document.getElementById('init-manual-json').value);
+    } catch(e) {
+      setStatus('err', 'Invalid JSON in blocks'); return;
     }
+    gInitConfig = { mode: 'manual', total_size: body.total_size, blocks: body.blocks };
+  }
 
-    // Internal frag indicator
-    if (!isFree && b.internal_fragmentation > 0) {
-      const fragW = (b.internal_fragmentation / b.size) * w;
-      g.append('rect')
-        .attr('x', w - fragW).attr('y', 0)
-        .attr('width', fragW).attr('height', H - 16)
-        .attr('fill', 'none')
-        .attr('stroke', '#555').attr('stroke-width', 1)
-        .attr('stroke-dasharray', '3,2');
-    }
+  const data = await api('POST', '/memory/init', body);
+  if (data) applyState(data);
+}
 
-    // Label
-    if (w > 24) {
-      g.append('text')
-        .attr('x', w / 2).attr('y', (H - 16) / 2 + 1)
-        .attr('text-anchor', 'middle')
-        .attr('dominant-baseline', 'middle')
-        .attr('fill', isFree ? '#333' : '#111')
-        .attr('font-family', "'Share Tech Mono', monospace")
-        .attr('font-size', Math.min(11, w / 3))
-        .text(isFree ? 'FREE' : b.pid);
-    }
+// ── Single operations ──────────────────────────────────────────────────────
+async function allocateProcess() {
+  if (!gState) { setStatus('err', 'Initialize memory first'); return; }
+  const pid  = document.getElementById('alloc-pid').value.trim();
+  const size = parseInt(document.getElementById('alloc-size').value);
+  const strategy = document.getElementById('alloc-strategy').value;
+  const reqSizeVal = document.getElementById('alloc-req-size').value;
+  const body = { pid, size, strategy };
+  if (reqSizeVal) body.requested_size = parseInt(reqSizeVal);
 
-    // Address tick
-    g.append('line')
-      .attr('x1', 0).attr('y1', H - 16)
-      .attr('x2', 0).attr('y2', H - 12)
-      .attr('stroke', '#444').attr('stroke-width', 1);
+  const data = await api('POST', '/memory/allocate', body);
+  if (data) {
+    if (!data.success) setStatus('err', `FAILED: ${data.reason}`);
+    applyState(data);
+    if (data.success) highlightBlock(data.start);
+  }
+}
 
-    g.append('text')
-      .attr('x', 2).attr('y', H - 2)
-      .attr('fill', '#444')
-      .attr('font-family', "'Share Tech Mono', monospace")
-      .attr('font-size', 9)
-      .text(b.start);
+async function freeProcess() {
+  if (!gState) { setStatus('err', 'Initialize memory first'); return; }
+  const pid = document.getElementById('free-pid').value.trim();
+  const data = await api('DELETE', `/memory/free/${pid}`);
+  if (data) applyState(data);
+}
 
-    // Hover tooltip
-    g.on('mousemove', (evt) => {
-      tooltip.style.display = 'block';
-      tooltip.style.left = (evt.clientX + 14) + 'px';
-      tooltip.style.top = (evt.clientY - 10) + 'px';
-      tooltip.textContent =
-        `${isFree ? '[ FREE ]' : `PID: ${b.pid}`}\n` +
-        `Start:  ${b.start} KB\n` +
-        `End:    ${b.end} KB\n` +
-        `Size:   ${b.size} KB` +
-        (b.logical_size != null ? `\nLogic:  ${b.logical_size} KB\nWaste:  ${b.internal_fragmentation} KB` : '');
-    }).on('mouseleave', () => {
-      tooltip.style.display = 'none';
-    });
+async function compactMemory() {
+  if (!gState) { setStatus('err', 'Initialize memory first'); return; }
+  const data = await api('POST', '/memory/compact');
+  if (data) {
+    animateCompaction(data.before, data.after, () => applyState(data));
+  }
+}
+
+// ── Batch ──────────────────────────────────────────────────────────────────
+let batchRowId = 0;
+
+function addBatchRow() {
+  const id = batchRowId++;
+  const tbody = document.getElementById('batch-rows');
+  const tr = document.createElement('tr');
+  tr.id = 'brow-' + id;
+  tr.innerHTML = `
+    <td><input value="P${id+1}"></td>
+    <td><input type="number" value="100"></td>
+    <td><select>
+      <option value="allocate">Allocate</option>
+      <option value="free">Free</option>
+    </select></td>
+    <td><select>
+      <option value="first_fit">First Fit</option>
+      <option value="best_fit">Best Fit</option>
+      <option value="worst_fit">Worst Fit</option>
+    </select></td>
+    <td><button class="btn small danger" onclick="document.getElementById('brow-${id}').remove()" style="padding:2px 5px;min-width:0">✕</button></td>
+  `;
+  tbody.appendChild(tr);
+}
+
+function clearBatch() {
+  document.getElementById('batch-rows').innerHTML = '';
+  batchRowId = 0;
+}
+
+function getBatchProcesses() {
+  return Array.from(document.querySelectorAll('#batch-rows tr')).map(tr => {
+    const inputs = tr.querySelectorAll('input, select');
+    return {
+      pid:      inputs[0].value.trim(),
+      size:     parseInt(inputs[1].value) || 0,
+      action:   inputs[2].value,
+      strategy: inputs[3].value,
+    };
   });
 }
 
-/* ─── Block Table ──────────────────────────────────────────────────────── */
-function renderTable(blocks) {
-  const tbody = document.getElementById('block-tbody');
-  tbody.innerHTML = '';
+async function runBatch() {
+  if (!gState) { setStatus('err', 'Initialize memory first'); return; }
+  const processes = getBatchProcesses();
+  if (!processes.length) { setStatus('err', 'Add processes first'); return; }
+  const data = await api('POST', '/memory/batch', { processes });
+  if (!data) return;
+
+  gBatchSteps = data.steps;
+  applyState(data);
+
+  // Show playback controls
+  const slider = document.getElementById('playback-slider');
+  slider.max   = gBatchSteps.length - 1;
+  slider.value = gBatchSteps.length - 1;
+  document.getElementById('playback-bar').style.display = 'flex';
+  document.getElementById('playback-step-label').textContent = `${gBatchSteps.length} / ${gBatchSteps.length}`;
+  setStatus('ok', `Batch complete — ${gBatchSteps.length} steps`);
+}
+
+// ── Timeline playback ──────────────────────────────────────────────────────
+function playbackSeek(idx) {
+  gPlayIdx = parseInt(idx);
+  const step = gBatchSteps[gPlayIdx];
+  if (!step) return;
+  renderMemoryMap(step.blocks_after, gState.total_size);
+  updateMetrics(step.metrics_after);
+  document.getElementById('playback-step-label').textContent = `${gPlayIdx + 1} / ${gBatchSteps.length}`;
+}
+
+function playbackPrev() {
+  if (gPlayIdx > 0) {
+    gPlayIdx--;
+    document.getElementById('playback-slider').value = gPlayIdx;
+    playbackSeek(gPlayIdx);
+  }
+}
+
+function playbackNext() {
+  if (gPlayIdx < gBatchSteps.length - 1) {
+    gPlayIdx++;
+    document.getElementById('playback-slider').value = gPlayIdx;
+    playbackSeek(gPlayIdx);
+  }
+}
+
+function togglePlayback() {
+  const btn = document.getElementById('play-btn');
+  if (gPlayTimer) {
+    clearInterval(gPlayTimer);
+    gPlayTimer = null;
+    btn.textContent = '▶ PLAY';
+  } else {
+    if (gPlayIdx >= gBatchSteps.length - 1) gPlayIdx = -1;
+    btn.textContent = '⏸ PAUSE';
+    gPlayTimer = setInterval(() => {
+      gPlayIdx++;
+      if (gPlayIdx >= gBatchSteps.length) {
+        clearInterval(gPlayTimer); gPlayTimer = null;
+        btn.textContent = '▶ PLAY'; return;
+      }
+      document.getElementById('playback-slider').value = gPlayIdx;
+      playbackSeek(gPlayIdx);
+    }, 500);
+  }
+}
+
+// ── Strategy Comparison ────────────────────────────────────────────────────
+async function runComparison() {
+  const processes = getBatchProcesses();
+  if (!processes.length) { setStatus('err', 'Add batch processes first'); return; }
+
+  // Strip strategy from workload — server tries all 3
+  const workload = processes.map(p => ({ ...p }));
+
+  const body = {
+    init:     gInitConfig,
+    workload: workload,
+  };
+
+  const data = await api('POST', '/memory/compare', body);
+  if (!data) return;
+  gLastComp = data.strategies;
+  renderComparison(data.strategies, data.seed);
+  switchTab('compare-tab', document.querySelectorAll('.tab')[2]);
+}
+
+function renderComparison(strategies, seed) {
+  const strats = Object.keys(strategies);
+  document.getElementById('compare-placeholder').style.display = 'none';
+  const wrap = document.getElementById('compare-table-wrap');
+  wrap.style.display = '';
+
+  const metricDefs = [
+    { key: 'external_frag', label: 'External Fragmentation', fmt: v => (v*100).toFixed(1)+'%', lower_better: true },
+    { key: 'internal_frag', label: 'Internal Fragmentation', fmt: v => v+' B',                lower_better: true },
+    { key: 'free_space',    label: 'Total Free Space',       fmt: v => v+' B',                lower_better: false},
+    { key: 'largest_free',  label: 'Largest Free Block',     fmt: v => v+' B',                lower_better: false},
+    { key: 'failed_allocs', label: 'Failed Allocations',     fmt: v => String(v),             lower_better: true },
+    { key: 'utilization',   label: 'Memory Utilization',     fmt: v => (v*100).toFixed(1)+'%',lower_better: false},
+  ];
+
+  // Find best per metric
+  const best = {};
+  metricDefs.forEach(md => {
+    const vals = strats.map(s => strategies[s][md.key] ?? 0);
+    const bestVal = md.lower_better ? Math.min(...vals) : Math.max(...vals);
+    best[md.key] = strats.filter(s => strategies[s][md.key] === bestVal);
+  });
+
+  let html = `<table><thead><tr><th>Metric</th>`;
+  strats.forEach(s => html += `<th>${s.replace(/_/g,' ').toUpperCase()}</th>`);
+  html += '</tr></thead><tbody>';
+
+  metricDefs.forEach(md => {
+    html += `<tr><td><b>${md.label}</b></td>`;
+    strats.forEach(s => {
+      const val = strategies[s][md.key] ?? 0;
+      const isBest = best[md.key].includes(s);
+      html += `<td class="${isBest ? 'best-col' : ''}">${md.fmt(val)}${isBest ? ' ★' : ''}</td>`;
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+
+  // Mini memory maps
+  const mapsEl = document.getElementById('compare-mini-maps');
+  mapsEl.innerHTML = '';
+  strats.forEach(s => {
+    const div = document.createElement('div');
+    div.className = 'mini-map-wrap';
+    div.innerHTML = `<div class="mini-map-label">${s.replace(/_/g,' ')}</div><svg class="mini-svg" style="width:100%;height:50px"></svg>`;
+    mapsEl.appendChild(div);
+    renderMiniMap(div.querySelector('svg'), strategies[s].final_blocks, strategies[s].total_size || gState.total_size);
+  });
+}
+
+function renderMiniMap(svgEl, blocks, totalSize) {
+  const W = 300;  // Fixed logical width — viewBox handles scaling
+  const H = 40;
+  const svg = d3.select(svgEl)
+    .attr('viewBox', `0 0 ${W} ${H}`)
+    .attr('preserveAspectRatio', 'none');
+  svg.selectAll('*').remove();
+  if (!blocks || !blocks.length || !totalSize) return;
+  const xScale = d3.scaleLinear().domain([0, totalSize]).range([0, W]);
   blocks.forEach(b => {
+    const bx = xScale(b.start);
+    const bw = Math.max(1, xScale(b.start + b.size) - bx);
+    svg.append('rect')
+      .attr('x', bx).attr('width', bw)
+      .attr('y', 4).attr('height', 32)
+      .attr('fill',   b.status === 'used' ? '#1a1a1a' : '#e8e8e0')
+      .attr('stroke', '#aaa').attr('stroke-width', 0.5);
+  });
+}
+
+// ── Rendering ──────────────────────────────────────────────────────────────
+function applyState(data) {
+  if (!data) return;
+  gState = data;
+  renderMemoryMap(data.blocks, data.total_size);
+  updateMetrics(data.metrics);
+  updateLog(data.event_log || []);
+  updateFragGraph(data.frag_history || []);
+  updateHeader(data);
+  setStatus('ok', `Tick ${data.tick}`);
+}
+
+function updateHeader(data) {
+  document.getElementById('hdr-seed').textContent  = data.seed != null ? data.seed : '—';
+  document.getElementById('hdr-total').textContent = data.total_size ? data.total_size+'B' : '—';
+  document.getElementById('hdr-tick').textContent  = data.tick ?? 0;
+}
+
+// ── Memory Map D3 ──────────────────────────────────────────────────────────
+function renderMemoryMap(blocks, totalSize, highlightStart) {
+  const container = document.getElementById('memory-map-svg').parentElement;
+  const W      = Math.max(400, container.clientWidth - 28);
+  const BAR_H  = 72;   // taller bar for better readability
+  const AXIS_H = 30;   // room for non-overlapping tick labels
+  const H      = BAR_H + AXIS_H + 4;
+
+  const svg = d3.select('#memory-map-svg')
+    .attr('viewBox', `0 0 ${W} ${H}`)
+    .attr('style', `height:${H}px;width:100%`);
+  svg.selectAll('*').remove();
+
+  const xScale = d3.scaleLinear().domain([0, totalSize]).range([0, W]);
+
+  const g = svg.append('g');
+
+  blocks.forEach(b => {
+    const x     = xScale(b.start);
+    const bw    = Math.max(1, xScale(b.size));
+    const isUsed = b.status === 'used';
+    const isHigh = highlightStart !== undefined && b.start === highlightStart;
+
+    // Main block rect
+    g.append('rect')
+      .attr('class', 'block-rect ' + (isUsed ? 'used' : 'free') + (isHigh ? ' highlight' : ''))
+      .attr('x', x).attr('y', 0)
+      .attr('width', bw).attr('height', BAR_H)
+      .on('mouseover', (event) => showTooltip(event, b))
+      .on('mousemove', (event) => moveTooltip(event))
+      .on('mouseout',  hideTooltip);
+
+    // Internal fragmentation strip (darker region at right edge of block)
+    if (isUsed && b.internal_frag > 0) {
+      const fragW = Math.max(1, xScale(b.internal_frag));
+      g.append('rect')
+        .attr('class', 'block-rect int-frag')
+        .attr('x', x + bw - fragW).attr('y', 0)
+        .attr('width', fragW).attr('height', BAR_H)
+        .attr('pointer-events', 'none');
+    }
+
+    // Block label (PID + size) — only if block is wide enough
+    if (bw > 32) {
+      const label = isUsed ? (b.pid || '?') : 'FREE';
+      const sizeStr = bw > 55 ? ' ' + b.size + 'B' : '';
+      g.append('text')
+        .attr('class', 'block-label ' + (isUsed ? '' : 'free-label'))
+        .attr('x', x + bw / 2).attr('y', BAR_H / 2 + 4)
+        .attr('text-anchor', 'middle')
+        .attr('clip-path', `inset(0 0 0 ${x}px)`)
+        .text(label + sizeStr);
+    }
+  });
+
+  // Axis line
+  g.append('line')
+    .attr('x1', 0).attr('y1', BAR_H + 4)
+    .attr('x2', W).attr('y2', BAR_H + 4)
+    .attr('stroke', '#bbb').attr('stroke-width', 1);
+
+  // Smart axis: compute how many ticks fit without overlap (each label ~40px wide)
+  const maxTicks = Math.max(2, Math.floor(W / 52));
+  // Nice round tick values based on totalSize
+  const rawStep = totalSize / maxTicks;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  const niceStep = Math.ceil(rawStep / magnitude) * magnitude;
+  const tickValues = [];
+  for (let v = 0; v <= totalSize; v += niceStep) tickValues.push(v);
+  if (tickValues[tickValues.length - 1] !== totalSize) tickValues.push(totalSize);
+
+  const axis = d3.axisBottom(xScale)
+    .tickValues(tickValues)
+    .tickSize(5)
+    .tickFormat(d => d + 'B');
+
+  const axisG = g.append('g')
+    .attr('transform', `translate(0,${BAR_H + 4})`)
+    .call(axis);
+
+  axisG.selectAll('text')
+    .attr('font-family', "'IBM Plex Mono'")
+    .attr('font-size', 9)
+    .attr('fill', '#888');
+
+  // Last tick — right-align to avoid clipping
+  axisG.selectAll('.tick:last-child text').attr('text-anchor', 'end');
+  axisG.select('.domain').attr('stroke', '#bbb');
+}
+
+function highlightBlock(start) {
+  if (!gState) return;
+  renderMemoryMap(gState.blocks, gState.total_size, start);
+  setTimeout(() => renderMemoryMap(gState.blocks, gState.total_size), 1200);
+}
+
+// ── Compaction animation ───────────────────────────────────────────────────
+function animateCompaction(before, after, callback) {
+  const container = document.getElementById('memory-map-svg').parentElement;
+  const W  = container.clientWidth - 28;
+  const BAR_H = 60;
+
+  const svg = d3.select('#memory-map-svg');
+  svg.selectAll('*').remove();
+
+  const totalSize = gState.total_size;
+  const xScale = d3.scaleLinear().domain([0, totalSize]).range([0, W]);
+
+  // Draw before state
+  const rects = {};
+  before.filter(b => b.status === 'used').forEach(b => {
+    const r = svg.append('rect')
+      .attr('class', 'block-rect used')
+      .attr('x', xScale(b.start)).attr('y', 0)
+      .attr('width', Math.max(1, xScale(b.size))).attr('height', BAR_H);
+    rects[b.pid] = { el: r, after: after.find(a => a.pid === b.pid) };
+  });
+
+  // Slide to after positions
+  setTimeout(() => {
+    Object.values(rects).forEach(({ el, after: ab }) => {
+      if (ab) {
+        el.transition().duration(600)
+          .attr('x', xScale(ab.start));
+      }
+    });
+    setTimeout(() => { if (callback) callback(); }, 700);
+  }, 100);
+}
+
+// ── Metrics ────────────────────────────────────────────────────────────────
+function updateMetrics(m) {
+  if (!m) return;
+  const ef = m.external_frag ?? 0;
+  const util = m.utilization ?? 0;
+
+  const setM = (id, val, warn) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = val;
+    el.className = 'metric-value' + (warn === true ? ' warn' : warn === false ? ' ok' : '');
+  };
+
+  setM('m-ext-frag', (ef*100).toFixed(1)+'%', ef > 0.4 ? true : ef < 0.1 ? false : null);
+  setM('m-int-frag', (m.internal_frag ?? 0)+' B');
+  setM('m-free',     (m.free_space ?? 0)+' B');
+  setM('m-util',     (util*100).toFixed(1)+'%');
+  setM('m-largest',  (m.largest_free ?? 0)+' B');
+  setM('m-nfree',    m.num_free_blocks ?? '—');
+  setM('m-nused',    m.num_used_blocks ?? '—');
+  setM('m-total',    (m.total_size ?? gState?.total_size ?? '—')+' B');
+}
+
+// ── Event log ──────────────────────────────────────────────────────────────
+function updateLog(log) {
+  const tbody = document.getElementById('log-body');
+  tbody.innerHTML = '';
+  const safe = (v, fb='—') => (v == null || v === '') ? fb : v;
+
+  // Show newest first
+  [...log].reverse().forEach(e => {
     const tr = document.createElement('tr');
-    tr.className = b.is_free ? 'row-free' : 'row-alloc';
+    tr.className = `log-${safe(e.type, 'UNKNOWN')}`;
     tr.innerHTML = `
-      <td>${b.is_free ? '—' : b.pid}</td>
-      <td>${b.start}</td>
-      <td>${b.end}</td>
-      <td>${b.size}</td>
-      <td>${b.logical_size != null ? b.logical_size : '—'}</td>
-      <td>${b.internal_fragmentation > 0 ? b.internal_fragmentation : '—'}</td>
+      <td>${safe(e.tick, 0)}</td>
+      <td>${safe(e.type)}</td>
+      <td>${safe(e.pid)}</td>
+      <td>${safe(e.strategy)}</td>
+      <td>${safe(e.start)}</td>
+      <td>${safe(e.size)}</td>
+      <td>${safe(e.reason, '')}</td>
     `;
     tbody.appendChild(tr);
   });
 }
 
-/* ─── Metrics ──────────────────────────────────────────────────────────── */
-function renderMetrics(m) {
-  document.getElementById('m-total-free').textContent   = m.total_free;
-  document.getElementById('m-total-alloc').textContent  = m.total_allocated;
-  document.getElementById('m-int-frag').textContent     = m.internal_fragmentation;
-  document.getElementById('m-ext-frag').textContent     = m.external_fragmentation;
-  document.getElementById('m-largest').textContent      = m.largest_free_block;
-  document.getElementById('m-free-regions').textContent = m.num_free_blocks;
+// ── Fragmentation graph D3 ─────────────────────────────────────────────────
+function updateFragGraph(history) {
+  if (!history || !history.length) return;
 
-  const pct = m.utilization_pct;
-  document.getElementById('util-fill').style.width = pct + '%';
-  document.getElementById('util-pct').textContent  = pct + '%';
+  const container = document.getElementById('frag-svg').parentElement;
+  const W = container.clientWidth - 28;
+  const H = 200;
+  const margin = { top: 10, right: 80, bottom: 40, left: 44 };
+  const iW = W - margin.left - margin.right;
+  const iH = H - margin.top - margin.bottom;
+
+  const svg = d3.select('#frag-svg')
+    .attr('viewBox', `0 0 ${W} ${H}`)
+    .attr('style', `height:${H}px;width:100%`);
+  svg.selectAll('*').remove();
+
+  const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
+
+  const xScale = d3.scaleLinear().domain([0, history.length - 1]).range([0, iW]);
+  const yScale = d3.scaleLinear().domain([0, 1]).range([iH, 0]);
+
+  // Grid
+  g.append('g').attr('class', 'grid')
+    .call(d3.axisLeft(yScale).ticks(5).tickSize(-iW).tickFormat(''))
+    .selectAll('line').attr('stroke', '#e0e0d8').attr('stroke-dasharray', '2,3');
+  g.select('.grid .domain').remove();
+
+  // Lines
+  const lines = [
+    { key: 'external_frag', color: '#1a1a1a',  label: 'Ext. Frag' },
+    { key: 'utilization',   color: '#666',      label: 'Utilization' },
+  ];
+
+  lines.forEach(({ key, color, label }) => {
+    const lineGen = d3.line()
+      .x((_, i) => xScale(i))
+      .y(d => yScale(Math.min(1, d[key] ?? 0)))
+      .curve(d3.curveMonotoneX);
+
+    g.append('path')
+      .datum(history)
+      .attr('fill', 'none')
+      .attr('stroke', color)
+      .attr('stroke-width', 2)
+      .attr('d', lineGen);
+
+    // Dots
+    g.selectAll(`.dot-${key}`).data(history).enter()
+      .append('circle')
+      .attr('cx', (_, i) => xScale(i))
+      .attr('cy', d => yScale(Math.min(1, d[key] ?? 0)))
+      .attr('r', 3)
+      .attr('fill', color);
+
+    // Legend
+    const li = lines.indexOf(lines.find(l => l.key === key));
+    g.append('line')
+      .attr('x1', iW + 8).attr('x2', iW + 22)
+      .attr('y1', li * 18 + 8).attr('y2', li * 18 + 8)
+      .attr('stroke', color).attr('stroke-width', 2);
+    g.append('text').attr('class', 'axis-label')
+      .attr('x', iW + 25).attr('y', li * 18 + 12)
+      .text(label);
+  });
+
+  // X axis with labels
+  const tickEvery = Math.max(1, Math.floor(history.length / 6));
+  g.append('g').attr('transform', `translate(0,${iH})`)
+    .call(d3.axisBottom(xScale)
+      .ticks(Math.min(history.length - 1, 6))
+      .tickFormat(i => {
+        const h = history[Math.round(i)];
+        return h ? (h.label || i) : '';
+      }))
+    .selectAll('text')
+    .attr('font-family', "'IBM Plex Mono'")
+    .attr('font-size', 9)
+    .attr('transform', 'rotate(-30)')
+    .attr('text-anchor', 'end');
+
+  // Y axis
+  g.append('g').call(d3.axisLeft(yScale).ticks(5).tickFormat(d3.format('.0%')))
+    .selectAll('text').attr('font-family', "'IBM Plex Mono'").attr('font-size', 9);
 }
 
-/* ─── Status bar ───────────────────────────────────────────────────────── */
-function renderStatusBar(s) {
-  document.getElementById('sb-total').textContent  = s.total_size;
-  document.getElementById('sb-unit').textContent   = s.allocation_unit;
-  document.getElementById('sb-blocks').textContent = s.blocks.length;
-}
+// ── Tooltip ────────────────────────────────────────────────────────────────
+const tt = document.getElementById('tooltip');
 
-/* ─── Log ──────────────────────────────────────────────────────────────── */
-function appendLog(entry, idx) {
-  const el = document.getElementById('log-inner');
-  const div = document.createElement('div');
-  div.className = 'log-entry';
-  div.innerHTML = `
-    <span class="log-time">${String(idx).padStart(2,'0')}</span>
-    <span class="log-action ${entry.action}">${entry.action}</span>
-    <span class="log-msg">${entry.message}</span>
+function showTooltip(event, b) {
+  const pid = b.pid || 'FREE';
+  const intFrag = b.internal_frag > 0 ? `<div class="tt-row"><span>Int. Frag</span><span class="tt-val">${b.internal_frag} B</span></div>` : '';
+  tt.innerHTML = `
+    <div class="tt-title">${pid}</div>
+    <div class="tt-row"><span>Start</span><span class="tt-val">${b.start}</span></div>
+    <div class="tt-row"><span>End</span><span class="tt-val">${b.end ?? b.start + b.size - 1}</span></div>
+    <div class="tt-row"><span>Size</span><span class="tt-val">${b.size} B</span></div>
+    <div class="tt-row"><span>Status</span><span class="tt-val">${b.status.toUpperCase()}</span></div>
+    ${intFrag}
   `;
-  el.appendChild(div);
-  el.scrollTop = el.scrollHeight;
+  tt.style.display = 'block';
+  moveTooltip(event);
 }
 
-async function syncLog() {
-  const data = await api('/api/log');
-  const entries = data.log;
-  const el = document.getElementById('log-inner');
-  // Only append new entries
-  const currentCount = el.querySelectorAll('.log-entry').length;
-  for (let i = currentCount; i < entries.length; i++) {
-    appendLog(entries[i], i + 1);
-  }
-  eventLog = entries;
+function moveTooltip(event) {
+  tt.style.left = (event.clientX + 14) + 'px';
+  tt.style.top  = (event.clientY - 10) + 'px';
 }
 
-/* ─── Step Trace ──────────────────────────────────────────────────────── */
-function renderStepInfo() {
-  if (stepIdx === -1) {
-    document.getElementById('step-info').textContent = 'LIVE';
-  } else {
-    document.getElementById('step-info').textContent =
-      `STEP ${stepIdx + 1} / ${eventLog.length}`;
-    const e = eventLog[stepIdx];
-    // Render historical snapshot
-    renderStrip(e.snapshot, state.total_size);
-    renderTable(e.snapshot);
-    renderMetrics(e.metrics);
-  }
+function hideTooltip() { tt.style.display = 'none'; }
+
+// ── UI helpers ─────────────────────────────────────────────────────────────
+function switchTab(tabId, el) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById(tabId).classList.add('active');
+  el.classList.add('active');
 }
 
-document.getElementById('btn-step-prev').addEventListener('click', () => {
-  if (eventLog.length === 0) return;
-  if (stepIdx === -1) stepIdx = eventLog.length - 1;
-  else stepIdx = Math.max(0, stepIdx - 1);
-  renderStepInfo();
-});
-
-document.getElementById('btn-step-next').addEventListener('click', () => {
-  if (stepIdx === -1) return;
-  stepIdx++;
-  if (stepIdx >= eventLog.length) stepIdx = -1;
-  if (stepIdx === -1) { render(state); }
-  renderStepInfo();
-});
-
-document.getElementById('btn-step-live').addEventListener('click', () => {
-  stepIdx = -1;
-  render(state);
-  renderStepInfo();
-});
-
-/* ─── Rounding hint ────────────────────────────────────────────────────── */
-function updateRoundingHint() {
-  if (!state) return;
-  const size = parseInt(document.getElementById('alloc-size').value) || 0;
-  const unit = state.allocation_unit;
-  const phys = Math.ceil(size / unit) * unit;
-  const hint = document.getElementById('rounding-hint');
-  if (size > 0 && phys !== size) {
-    hint.textContent = `↳ rounds up ${size} → ${phys} KB (+${phys - size} KB wasted)`;
-  } else if (size > 0) {
-    hint.textContent = `↳ exact fit: ${phys} KB`;
-  } else {
-    hint.textContent = '';
-  }
+function togglePanel(header) {
+  const body = header.nextElementSibling;
+  body.classList.toggle('collapsed');
+  header.textContent = header.textContent.replace(/[▶▼]/, body.classList.contains('collapsed') ? '▶' : '▼');
 }
 
-document.getElementById('alloc-size').addEventListener('input', updateRoundingHint);
-
-/* ─── Auto-increment PID ───────────────────────────────────────────────── */
-function nextPid() {
-  const pids = state?.blocks.filter(b => !b.is_free).map(b => b.pid) || [];
-  // Find the next available Pn
-  let n = 1;
-  while (pids.includes(`P${n}`)) n++;
-  document.getElementById('alloc-pid').value = `P${n}`;
+async function exportState() {
+  const data = await api('GET', '/memory/export-state');
+  if (!data) return;
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  Object.assign(document.createElement('a'), { href: url, download: 'memsim_state.json' }).click();
+  URL.revokeObjectURL(url);
 }
 
-/* ─── Actions ──────────────────────────────────────────────────────────── */
-document.getElementById('btn-alloc').addEventListener('click', async () => {
-  const pid  = document.getElementById('alloc-pid').value.trim();
-  const size = parseInt(document.getElementById('alloc-size').value);
-  const strat = document.getElementById('alloc-strategy').value;
-  if (!pid || !size) return toast('Enter PID and size', 'err');
-  try {
-    const data = await api('/api/allocate', 'POST', { pid, size, strategy: strat });
-    render(data.state);
-    await syncLog();
-    stepIdx = -1;
-    renderStepInfo();
-    if (data.result.success) {
-      toast(`✓ ${data.result.message}`, 'ok');
-      nextPid();
-    } else {
-      toast(`✗ ${data.result.message}`, 'err');
-    }
-    updateRoundingHint();
-  } catch(e) { toast(e.message, 'err'); }
-});
-
-document.getElementById('btn-free').addEventListener('click', async () => {
-  const pid = document.getElementById('free-pid').value.trim();
-  if (!pid) return toast('Enter a PID to free', 'err');
-  try {
-    const data = await api('/api/free', 'POST', { pid });
-    render(data.state);
-    await syncLog();
-    stepIdx = -1;
-    toast(data.success ? `✓ ${data.message}` : `✗ ${data.message}`,
-          data.success ? 'ok' : 'err');
-  } catch(e) { toast(e.message, 'err'); }
-});
-
-document.getElementById('btn-compact').addEventListener('click', async () => {
-  try {
-    const data = await api('/api/compact', 'POST');
-    render(data.state);
-    await syncLog();
-    stepIdx = -1;
-    toast(`⊞ ${data.message}`, 'info');
-  } catch(e) { toast(e.message, 'err'); }
-});
-
-document.getElementById('btn-reset').addEventListener('click', async () => {
-  const total = parseInt(document.getElementById('cfg-total').value);
-  const unit  = parseInt(document.getElementById('cfg-unit').value);
-  try {
-    const data = await api('/api/reset', 'POST', { total_size: total, allocation_unit: unit });
-    Object.keys(pidColorMap).forEach(k => delete pidColorMap[k]);
-    colorIdx = 0;
-    document.getElementById('log-inner').innerHTML = '';
-    render(data.state);
-    await syncLog();
-    stepIdx = -1;
-    toast('Memory reset', 'info');
-    updateRoundingHint();
-  } catch(e) { toast(e.message, 'err'); }
-});
-
-/* ─── Demo scenarios ───────────────────────────────────────────────────── */
-async function runScenario(steps) {
-  await api('/api/reset', 'POST', { total_size: 1024, allocation_unit: 32 });
-  Object.keys(pidColorMap).forEach(k => delete pidColorMap[k]);
-  colorIdx = 0;
-  document.getElementById('log-inner').innerHTML = '';
-  for (const s of steps) {
-    if (s.action === 'alloc') await api('/api/allocate','POST',s.body);
-    if (s.action === 'free')  await api('/api/free','POST',s.body);
-  }
-  const data = await api('/api/state');
-  render(data);
-  await syncLog();
-  stepIdx = -1;
+async function downloadPDF() {
+  if (!gState) { setStatus('err', 'No simulation state to export'); return; }
+  const payload = {
+    title:      'MemSim — Memory Allocation Simulation Report',
+    seed:       gState.seed,
+    strategy:   document.getElementById('alloc-strategy').value,
+    total_size: gState.total_size,
+    tick:       gState.tick,
+    blocks:     gState.blocks,
+    metrics:    gState.metrics,
+    comparison: gLastComp || null,
+    event_log:  gState.event_log,
+  };
+  setStatus('loading', 'Generating PDF...');
+  const res = await fetch(API + '/export/pdf', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) { setStatus('err', 'PDF export failed'); return; }
+  const blob = await res.blob();
+  const url  = URL.createObjectURL(blob);
+  Object.assign(document.createElement('a'), { href: url, download: 'memsim_report.pdf' }).click();
+  URL.revokeObjectURL(url);
+  setStatus('ok', 'PDF downloaded');
 }
 
-document.getElementById('demo-fragmented').addEventListener('click', () => {
-  runScenario([
-    {action:'alloc', body:{pid:'P1',size:100,strategy:'first_fit'}},
-    {action:'alloc', body:{pid:'P2',size:200,strategy:'first_fit'}},
-    {action:'alloc', body:{pid:'P3',size:80,strategy:'first_fit'}},
-    {action:'alloc', body:{pid:'P4',size:150,strategy:'first_fit'}},
-    {action:'alloc', body:{pid:'P5',size:120,strategy:'first_fit'}},
-    {action:'free',  body:{pid:'P2'}},
-    {action:'free',  body:{pid:'P4'}},
-  ]).then(() => toast('Fragmented scenario loaded', 'info'));
+function clearAll() {
+  gState = null; gBatchSteps = []; gPlayIdx = 0; gLastComp = null;
+  if (gPlayTimer) { clearInterval(gPlayTimer); gPlayTimer = null; }
+  d3.select('#memory-map-svg').selectAll('*').remove();
+  d3.select('#frag-svg').selectAll('*').remove();
+  document.getElementById('log-body').innerHTML = '';
+  document.getElementById('playback-bar').style.display = 'none';
+  document.getElementById('compare-table-wrap').style.display = 'none';
+  document.getElementById('compare-placeholder').style.display = '';
+  document.getElementById('compare-mini-maps').innerHTML = '';
+  ['m-ext-frag','m-int-frag','m-free','m-util','m-largest','m-nfree','m-nused','m-total']
+    .forEach(id => { const el = document.getElementById(id); if(el) el.textContent='—'; });
+  document.getElementById('hdr-seed').textContent  = '—';
+  document.getElementById('hdr-total').textContent = '—';
+  document.getElementById('hdr-tick').textContent  = '0';
+  setStatus('ok', 'Reset — initialize memory to begin.');
+}
+
+// ── Init with default batch rows ───────────────────────────────────────────
+window.addEventListener('load', () => {
+  onInitModeChange();
+  // Pre-populate one batch row
+  addBatchRow();
+  addBatchRow();
+
+  // Trigger initial render if backend is live
+  fetch(API + '/memory/state').then(r => r.json()).then(d => {
+    if (d && d.blocks && d.blocks.length) applyState(d);
+  }).catch(() => {});
 });
 
-document.getElementById('demo-full').addEventListener('click', () => {
-  runScenario([
-    {action:'alloc', body:{pid:'P1',size:256,strategy:'best_fit'}},
-    {action:'alloc', body:{pid:'P2',size:256,strategy:'best_fit'}},
-    {action:'alloc', body:{pid:'P3',size:256,strategy:'best_fit'}},
-    {action:'alloc', body:{pid:'P4',size:200,strategy:'best_fit'}},
-    {action:'free',  body:{pid:'P3'}},
-    {action:'alloc', body:{pid:'P5',size:64,strategy:'best_fit'}},
-  ]).then(() => toast('Near-full scenario loaded', 'info'));
-});
-
-document.getElementById('demo-swiss').addEventListener('click', () => {
-  const steps = [];
-  for(let i=1; i<=10; i++) steps.push({action:'alloc',body:{pid:`P${i}`,size:60+i*5,strategy:'worst_fit'}});
-  for(let i=2; i<=10; i+=2) steps.push({action:'free',body:{pid:`P${i}`}});
-  runScenario(steps).then(() => toast('Swiss cheese scenario loaded', 'info'));
-});
-
-/* ─── Resize strip on window resize ───────────────────────────────────── */
-let resizeTimer;
 window.addEventListener('resize', () => {
-  clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => {
-    if (state) renderStrip(state.blocks, state.total_size);
-  }, 100);
-});
-
-/* ─── Bootstrap ────────────────────────────────────────────────────────── */
-async function init() {
-  try {
-    const data = await api('/api/state');
-    render(data);
-    await syncLog();
-    updateRoundingHint();
-    document.getElementById('cfg-total').value = data.total_size;
-    document.getElementById('cfg-unit').value  = data.allocation_unit;
-    document.getElementById('sb-api').textContent = window.location.host || 'localhost:8000';
-  } catch(e) {
-    toast('Cannot reach backend — start the FastAPI server', 'err');
+  if (gState) {
+    renderMemoryMap(gState.blocks, gState.total_size);
+    updateFragGraph(gState.frag_history || []);
   }
-}
-
-init();
+});
 </script>
 </body>
 </html>

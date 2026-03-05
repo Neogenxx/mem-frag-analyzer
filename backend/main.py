@@ -1,421 +1,274 @@
 """
-MEMSIM Backend — zero dependencies, pure stdlib HTTP server
-Works on Python 3.8+ including 3.14
+main.py — MemSim FastAPI application.
+Run with: uvicorn main:app --reload
 """
-import json
-import csv
-import io
+from __future__ import annotations
+import copy
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response, JSONResponse
+from fastapi.staticfiles import StaticFiles
 import os
-import sys
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse
 
-# Add backend dir to path so simulator.py is importable
-sys.path.insert(0, os.path.dirname(__file__))
-from simulator import MemorySimulator
+from models import (
+    SimState, InitRequest, AllocateRequest, FreeRequest,
+    BatchRequest, CompareRequest, block_list
+)
+from allocator import (
+    init_from_seed, init_from_manual, init_from_preset,
+    allocate, free_pid, compact, PRESETS
+)
+from metrics import compute_metrics, snapshot, metrics_from_blocks
+from export_pdf import generate_pdf
 
-sim = MemorySimulator(total_size=1024, allocation_unit=32)
-FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
+app = FastAPI(title="MemSim", version="1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ── Global simulation state ────────────────────────────────────────────────
+# One state object for the session. In a real multi-user system you'd use
+# a session ID, but for academic purposes this is fine.
+state = SimState(total_size=1024)
 
 
-class Handler(BaseHTTPRequestHandler):
+def _full_response() -> dict:
+    """Standard full state response returned after every mutation."""
+    return {
+        "total_size":    state.total_size,
+        "blocks":        block_list(state.blocks),
+        "metrics":       compute_metrics(state),
+        "event_log":     state.event_log,
+        "frag_history":  state.frag_history,
+        "tick":          state.tick,
+        "seed":          state.seed,
+        "preset_name":   state.preset_name,
+    }
 
-    def log_message(self, fmt, *args):
-        print(f"  {self.address_string()} {fmt % args}")
 
-    # ── CORS + JSON helpers ──────────────────────────────────────────────
+# ── Initialization ─────────────────────────────────────────────────────────
 
-    def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+@app.get("/memory/presets")
+def list_presets():
+    """List available preset names and their descriptions."""
+    return {
+        "presets": [
+            {"name": "clean",       "description": "Single large free block",      "total_size": 1024},
+            {"name": "fragmented",  "description": "Heavily fragmented layout",    "total_size": 1024},
+            {"name": "uniform",     "description": "8 equal free blocks",          "total_size": 1024},
+            {"name": "mostly_used", "description": "Most memory allocated",        "total_size": 512},
+        ]
+    }
 
-    def _send_json(self, data, status=200):
-        body = json.dumps(data).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", len(body))
-        self._cors()
-        self.end_headers()
-        self.wfile.write(body)
 
-    def _send_download(self, body: bytes, mime: str, filename: str):
-        self.send_response(200)
-        self.send_header("Content-Type", mime)
-        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-        self.send_header("Content-Length", len(body))
-        self._cors()
-        self.end_headers()
-        self.wfile.write(body)
+@app.post("/memory/init")
+def init_memory(req: InitRequest):
+    """
+    Initialize memory. Three modes:
+    - seed:   deterministic random layout
+    - manual: explicit block list
+    - preset: named predefined layout
+    """
+    global state
 
-    def _send_file(self, path: str):
-        ext = os.path.splitext(path)[1].lower()
-        mime = {
-            ".html": "text/html; charset=utf-8",
-            ".js":   "application/javascript",
-            ".css":  "text/css",
-            ".ico":  "image/x-icon",
-        }.get(ext, "application/octet-stream")
+    if req.mode == "seed":
+        seed = req.seed if req.seed is not None else 0
+        total = req.total_size or 1024
+        blocks = init_from_seed(total, seed)
+        state = SimState(total_size=total, blocks=blocks, seed=seed)
+
+    elif req.mode == "manual":
+        if not req.blocks:
+            raise HTTPException(400, "blocks required for manual mode")
+        total = req.total_size or 1024
         try:
-            with open(path, "rb") as f:
-                body = f.read()
-            self.send_response(200)
-            self.send_header("Content-Type", mime)
-            self.send_header("Content-Length", len(body))
-            self.end_headers()
-            self.wfile.write(body)
-        except FileNotFoundError:
-            self.send_response(404)
-            self.end_headers()
+            blocks = init_from_manual(total, [b.model_dump() for b in req.blocks])
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        state = SimState(total_size=total, blocks=blocks)
 
-    def _read_json(self):
-        length = int(self.headers.get("Content-Length", 0))
-        if length == 0:
-            return {}
-        return json.loads(self.rfile.read(length))
+    elif req.mode == "preset":
+        name = req.preset or "clean"
+        try:
+            total, blocks = init_from_preset(name)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        state = SimState(total_size=total, blocks=blocks, preset_name=name)
 
-    def _error(self, msg, status=400):
-        self._send_json({"error": msg}, status)
+    else:
+        raise HTTPException(400, f"Unknown mode: {req.mode}")
 
-    # ── OPTIONS (preflight) ──────────────────────────────────────────────
-
-    def do_OPTIONS(self):
-        self.send_response(204)
-        self._cors()
-        self.end_headers()
-
-    # ── GET ──────────────────────────────────────────────────────────────
-
-    def do_GET(self):
-        path = urlparse(self.path).path
-
-        if path == "/" or path == "":
-            self._send_file(os.path.join(FRONTEND_DIR, "index.html"))
-
-        elif path == "/api/state":
-            self._send_json(sim.get_state())
-
-        elif path == "/api/log":
-            self._send_json({"log": sim.event_log})
-
-        elif path == "/api/metrics":
-            self._send_json(sim.get_metrics().to_dict())
-
-        elif path == "/api/export/json":
-            payload = {
-                "config": {"total_size": sim.total_size, "allocation_unit": sim.allocation_unit},
-                "events": sim.event_log,
-                "final_state": sim.get_state(),
-            }
-            body = json.dumps(payload, indent=2).encode()
-            self._send_download(body, "application/json", "memsim_trace.json")
-
-        elif path == "/api/export/csv":
-            buf = io.StringIO()
-            w = csv.writer(buf)
-            w.writerow(["step","timestamp","action","message",
-                        "total_memory_kb","total_allocated_kb","total_free_kb",
-                        "internal_frag_kb","external_frag_kb",
-                        "largest_free_block_kb","num_free_blocks",
-                        "num_allocated_blocks","utilization_pct"])
-            for e in sim.event_log:
-                m = e.get("metrics", {})
-                w.writerow([e.get("step",""), e.get("timestamp",""),
-                             e.get("action",""), e.get("message",""),
-                             m.get("total_memory",""), m.get("total_allocated",""),
-                             m.get("total_free",""), m.get("internal_fragmentation",""),
-                             m.get("external_fragmentation",""),
-                             m.get("largest_free_block",""), m.get("num_free_blocks",""),
-                             m.get("num_allocated_blocks",""), m.get("utilization_pct","")])
-            body = buf.getvalue().encode()
-            self._send_download(body, "text/csv", "memsim_trace.csv")
-
-        elif path.startswith("/static/"):
-            self._send_file(os.path.join(FRONTEND_DIR, path.lstrip("/")))
-
-        else:
-            self._error("Not found", 404)
-
-    # ── POST ─────────────────────────────────────────────────────────────
-
-    def do_POST(self):
-        path = urlparse(self.path).path
-
-        if path == "/api/allocate":
-            data = self._read_json()
-            pid      = str(data.get("pid", "")).strip()
-            size     = data.get("size")
-            strategy = str(data.get("strategy", "first_fit")).lower()
-            if not pid or not isinstance(size, (int, float)) or int(size) <= 0:
-                return self._error("pid (str) and size (int > 0) required")
-            size = int(size)
-            if strategy == "first_fit":
-                result = sim.allocate_first_fit(pid, size)
-            elif strategy == "best_fit":
-                result = sim.allocate_best_fit(pid, size)
-            elif strategy == "worst_fit":
-                result = sim.allocate_worst_fit(pid, size)
-            else:
-                return self._error(f"Unknown strategy: {strategy}")
-            self._send_json({"result": result.to_dict(), "state": sim.get_state()})
-
-        elif path == "/api/free":
-            data = self._read_json()
-            pid = str(data.get("pid", "")).strip()
-            if not pid:
-                return self._error("pid required")
-            success, message = sim.free(pid)
-            self._send_json({"success": success, "message": message, "state": sim.get_state()})
-
-        elif path == "/api/compact":
-            message = sim.compact()
-            self._send_json({"message": message, "state": sim.get_state()})
-
-        elif path == "/api/reset":
-            data = self._read_json()
-            total = data.get("total_size")
-            unit  = data.get("allocation_unit")
-            total = int(total) if total and int(total) > 0 else None
-            unit  = int(unit)  if unit  and int(unit)  > 0 else None
-            sim.reset(total, unit)
-            self._send_json({"message": "Memory reset", "state": sim.get_state()})
-
-        else:
-            self._error("Not found", 404)
+    # Take initial snapshot
+    snapshot(state, label="init")
+    return _full_response()
 
 
-def run(host="0.0.0.0", port=8000):
-    server = HTTPServer((host, port), Handler)
-    print("━" * 44)
-    print("  MEMSIM — Memory Allocation Simulator")
-    print("━" * 44)
-    print(f"  Server : http://localhost:{port}")
-    print(f"  Python : {sys.version.split()[0]}")
-    print(f"  Deps   : none (stdlib only)")
-    print("━" * 44)
-    print("  Open http://localhost:8000 in your browser")
-    print("  Ctrl+C to stop\n")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\n  Server stopped.")
+# ── Single operations ──────────────────────────────────────────────────────
 
-
-if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
-    run(port=port)
-
-# ─── Comparison Mode ──────────────────────────────────────────────────────────
-
-from comparison import run_comparison, generate_comparison_csv
-from typing import List
-
-class ProcessInput(BaseModel):
-    pid: str
-    size: int = Field(gt=0)
-
-class ComparisonRequest(BaseModel):
-    total_size: int = Field(default=1024, gt=0)
-    allocation_unit: int = Field(default=32, gt=0)
-    processes: List[ProcessInput]
-
-@app.post("/api/compare")
-def compare_strategies(req: ComparisonRequest):
-    """Run all three strategies on the same process list and compare"""
-    processes = [(p.pid, p.size) for p in req.processes]
-    results = run_comparison(req.total_size, req.allocation_unit, processes)
-    
-    return {
-        "comparison": {
-            strategy: result.to_dict() 
-            for strategy, result in results.items()
-        }
-    }
-
-@app.post("/api/compare/export/csv")
-def export_comparison_csv(req: ComparisonRequest):
-    """Export comparison results as CSV"""
-    processes = [(p.pid, p.size) for p in req.processes]
-    results = run_comparison(req.total_size, req.allocation_unit, processes)
-    csv_content = generate_comparison_csv(results)
-    
-    return StreamingResponse(
-        io.BytesIO(csv_content.encode()),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=memsim_comparison.csv"}
+@app.post("/memory/allocate")
+def allocate_process(req: AllocateRequest):
+    """Allocate a single process with a named strategy."""
+    result = allocate(
+        state, req.pid, req.size, req.strategy,
+        requested_size=req.requested_size
     )
+    snapshot(state, label=f"alloc({req.pid})")
+    return {**result, **_full_response()}
 
-@app.post("/api/compare/export/json")
-def export_comparison_json(req: ComparisonRequest):
-    """Export comparison results as JSON"""
-    processes = [(p.pid, p.size) for p in req.processes]
-    results = run_comparison(req.total_size, req.allocation_unit, processes)
-    
-    payload = {
-        "config": {
-            "total_size": req.total_size,
-            "allocation_unit": req.allocation_unit,
-            "processes": [{"pid": p, "size": s} for p, s in processes]
-        },
-        "results": {
-            strategy: {
-                **result.to_dict(),
-                "blocks": result.final_state["blocks"],
-                "events": result.event_log
-            }
-            for strategy, result in results.items()
-        }
-    }
-    
-    content = json.dumps(payload, indent=2)
-    return StreamingResponse(
-        io.BytesIO(content.encode()),
-        media_type="application/json",
-        headers={"Content-Disposition": "attachment; filename=memsim_comparison.json"}
-    )
 
-@app.get("/compare", response_class=HTMLResponse)
-def compare_page():
-    html_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "compare.html")
-    with open(html_path, "r") as f:
-        return HTMLResponse(content=f.read())
+@app.delete("/memory/free/{pid}")
+def free_process(pid: str):
+    """Free all memory held by a PID."""
+    result = free_pid(state, pid)
+    snapshot(state, label=f"free({pid})")
+    return {**result, **_full_response()}
 
-# ─── Random Block Generator ───────────────────────────────────────────────────
 
-from random_generator import generate_random_blocks, generate_fragmented_scenario
+@app.post("/memory/compact")
+def compact_memory():
+    """Compact memory — move all used blocks to front, free space to end."""
+    result = compact(state)
+    snapshot(state, label="compact")
+    return {**result, **_full_response()}
 
-class RandomBlockRequest(BaseModel):
-    total_size: int = Field(default=1024, gt=0)
-    allocation_unit: int = Field(default=32, gt=0)
-    num_blocks: int = Field(default=5, ge=1, le=20)
-    fill_ratio: float = Field(default=0.6, ge=0.1, le=0.9)
-    strategy: str = Field(default="first_fit")
 
-@app.post("/api/random/generate")
-def generate_random_memory(req: RandomBlockRequest):
-    """Generate random allocated blocks in memory"""
-    # Reset with new config
-    sim.reset(req.total_size, req.allocation_unit)
-    
-    # Generate random blocks
-    blocks = generate_random_blocks(
-        req.total_size,
-        req.allocation_unit,
-        req.num_blocks,
-        req.fill_ratio
-    )
-    
-    # Allocate them
-    for pid, size in blocks:
-        if req.strategy == "first_fit":
-            sim.allocate_first_fit(pid, size)
-        elif req.strategy == "best_fit":
-            sim.allocate_best_fit(pid, size)
-        else:
-            sim.allocate_worst_fit(pid, size)
-    
-    return {
-        "message": f"Generated {len(blocks)} random blocks",
-        "state": sim.get_state()
-    }
+# ── Batch execution ────────────────────────────────────────────────────────
 
-@app.post("/api/random/fragmented")
-def generate_fragmented():
-    """Generate a pre-fragmented memory scenario"""
-    allocations, to_free = generate_fragmented_scenario(sim.total_size, sim.allocation_unit)
-    
-    # Reset
-    sim.reset()
-    
-    # Allocate all
-    for pid, size in allocations:
-        sim.allocate_first_fit(pid, size)
-    
-    # Free every other one
-    for pid in to_free:
-        sim.free(pid)
-    
-    return {
-        "message": "Generated fragmented scenario",
-        "state": sim.get_state()
-    }
+@app.post("/memory/batch")
+def batch_execute(req: BatchRequest):
+    """
+    Run a list of processes sequentially.
+    Returns per-step results + fragmentation history for timeline replay.
+    Resets frag_history so the graph shows only this batch run.
+    """
+    state.frag_history = []   # clear old history — each batch is a fresh graph
+    state.tick = 0             # reset tick counter for clean event labels
 
-# ─── Batch Allocation ─────────────────────────────────────────────────────────
-
-class BatchAllocation(BaseModel):
-    processes: List[ProcessInput]
-    strategy: str = Field(default="first_fit")
-
-@app.post("/api/allocate/batch")
-def allocate_batch(req: BatchAllocation):
-    """Allocate multiple processes at once"""
-    results = []
+    steps = []
     for proc in req.processes:
-        if req.strategy == "first_fit":
-            result = sim.allocate_first_fit(proc.pid, proc.size)
-        elif req.strategy == "best_fit":
-            result = sim.allocate_best_fit(proc.pid, proc.size)
-        else:
-            result = sim.allocate_worst_fit(proc.pid, proc.size)
-        results.append(result.to_dict())
-    
+        if proc.action == "allocate":
+            r = allocate(state, proc.pid, proc.size, proc.strategy)
+        else:  # free
+            r = free_pid(state, proc.pid)
+
+        snap = snapshot(state, label=f"{proc.action}({proc.pid})")
+        steps.append({
+            **r,
+            "blocks_after":  block_list(state.blocks),
+            "metrics_after": compute_metrics(state),
+            "snap":          snap,
+        })
+
     return {
-        "results": results,
-        "state": sim.get_state()
+        "steps":        steps,
+        "frag_history": state.frag_history,
+        **_full_response(),
     }
 
-# ─── Download Current State Report ───────────────────────────────────────────
 
-@app.get("/api/download/report")
-def download_report():
-    """Download current memory state as detailed report"""
-    import csv
-    import io
-    
-    output = io.StringIO()
-    writer = csv.writer(output)
-    
-    # Header
-    writer.writerow(["MEMSIM Memory State Report"])
-    writer.writerow([f"Generated: {datetime.now().isoformat()}"])
-    writer.writerow([])
-    
-    # Config
-    writer.writerow(["Configuration"])
-    writer.writerow(["Total Memory (KB)", sim.total_size])
-    writer.writerow(["Allocation Unit (KB)", sim.allocation_unit])
-    writer.writerow([])
-    
-    # Metrics
-    m = sim.get_metrics()
-    writer.writerow(["Fragmentation Metrics"])
-    writer.writerow(["Total Allocated (KB)", m.total_allocated])
-    writer.writerow(["Total Free (KB)", m.total_free])
-    writer.writerow(["Internal Fragmentation (KB)", m.internal_fragmentation])
-    writer.writerow(["External Fragmentation (KB)", m.external_fragmentation])
-    writer.writerow(["Largest Free Block (KB)", m.largest_free_block])
-    writer.writerow(["Free Regions", m.num_free_blocks])
-    writer.writerow(["Allocated Blocks", m.num_allocated_blocks])
-    writer.writerow(["Utilization (%)", m.utilization_pct])
-    writer.writerow([])
-    
-    # Block table
-    writer.writerow(["Memory Blocks"])
-    writer.writerow(["PID", "Start (KB)", "End (KB)", "Physical (KB)", "Logical (KB)", "Int Frag (KB)", "Type"])
-    for b in sim.blocks:
-        writer.writerow([
-            b.pid or "—",
-            b.start,
-            b.end,
-            b.size,
-            b.logical_size or "—",
-            b.internal_fragmentation or "—",
-            "FREE" if b.is_free else "ALLOC"
-        ])
-    
-    output.seek(0)
-    return StreamingResponse(
-        io.BytesIO(output.getvalue().encode()),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=memsim_report.csv"}
+# ── Strategy comparison ────────────────────────────────────────────────────
+
+@app.post("/memory/compare")
+def compare_strategies(req: CompareRequest):
+    """
+    Run the same workload with First Fit, Best Fit, and Worst Fit.
+    Uses isolated state — does NOT mutate the global state.
+    """
+    results = {}
+
+    for strategy in ["first_fit", "best_fit", "worst_fit"]:
+        # Build a fresh isolated state
+        init_req = req.init
+        if init_req.mode == "seed":
+            seed = init_req.seed or 0
+            total = init_req.total_size or 1024
+            blocks = init_from_seed(total, seed)
+            sim = SimState(total_size=total, blocks=blocks, seed=seed)
+        elif init_req.mode == "preset":
+            name = init_req.preset or "clean"
+            total, blocks = init_from_preset(name)
+            sim = SimState(total_size=total, blocks=blocks)
+        else:
+            total = init_req.total_size or 1024
+            blocks = init_from_manual(total, [b.model_dump() for b in (init_req.blocks or [])])
+            sim = SimState(total_size=total, blocks=blocks)
+
+        failed = 0
+        frag_hist = []
+
+        for proc in req.workload:
+            if proc.action == "allocate":
+                r = allocate(sim, proc.pid, proc.size, strategy)
+                if not r["success"]:
+                    failed += 1
+            else:
+                free_pid(sim, proc.pid)
+
+            snap = snapshot(sim, label=f"{proc.action}({proc.pid})")
+            frag_hist.append(snap)
+
+        m = compute_metrics(sim)
+        results[strategy] = {
+            **m,
+            "failed_allocs": failed,
+            "final_blocks":  block_list(sim.blocks),
+            "frag_history":  frag_hist,
+            "total_size":    sim.total_size,
+        }
+
+    return {
+        "seed":       req.init.seed,
+        "strategies": results,
+    }
+
+
+# ── State inspection ───────────────────────────────────────────────────────
+
+@app.get("/memory/state")
+def get_state():
+    return _full_response()
+
+
+@app.get("/memory/metrics")
+def get_metrics():
+    return compute_metrics(state)
+
+
+@app.get("/memory/export-state")
+def export_state():
+    """Export current memory state as JSON (for reproducibility)."""
+    return {
+        "total_size": state.total_size,
+        "seed":       state.seed,
+        "blocks": [
+            {"start": b.start, "size": b.size,
+             "status": b.status, "pid": b.pid}
+            for b in state.blocks
+        ]
+    }
+
+
+# ── PDF export ─────────────────────────────────────────────────────────────
+
+@app.post("/export/pdf")
+def export_pdf(data: dict):
+    """Generate and stream a PDF report."""
+    try:
+        pdf_bytes = generate_pdf(data)
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="memsim_report.pdf"'}
     )
+
+
+# ── Serve frontend ─────────────────────────────────────────────────────────
+frontend_path = os.path.join(os.path.dirname(__file__), "..", "frontend")
+if os.path.exists(frontend_path):
+    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="static")
